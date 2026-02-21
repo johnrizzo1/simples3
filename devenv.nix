@@ -27,6 +27,10 @@
   # Falls back to X11 (via XWayland) which is stable.
   env.GDK_BACKEND = "x11";
 
+  # Disable WebKitGTK DMA-BUF renderer to fix blank white page
+  # caused by "Failed to create GBM buffer" on NixOS.
+  env.WEBKIT_DISABLE_DMABUF_RENDERER = "1";
+
   # https://devenv.sh/scripts/
 
   # On NixOS, the tauri CLI is installed as cargo-tauri.

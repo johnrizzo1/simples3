@@ -21,23 +21,26 @@ impl KeystoreService {
         access_key_id: String,
         secret_access_key: String,
     ) -> AppResult<()> {
-        // Store access key
-        let access_key_entry = Entry::new(&self.service_name, &format!("{}_access_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+        let service_name = self.service_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let access_key_entry = Entry::new(&service_name, &format!("{}_access_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        access_key_entry
-            .set_password(&access_key_id)
-            .map_err(|e| AppError::Keystore(format!("Failed to store access key: {}", e)))?;
+            access_key_entry
+                .set_password(&access_key_id)
+                .map_err(|e| AppError::Keystore(format!("Failed to store access key: {}", e)))?;
 
-        // Store secret key
-        let secret_key_entry = Entry::new(&self.service_name, &format!("{}_secret_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+            let secret_key_entry = Entry::new(&service_name, &format!("{}_secret_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        secret_key_entry
-            .set_password(&secret_access_key)
-            .map_err(|e| AppError::Keystore(format!("Failed to store secret key: {}", e)))?;
+            secret_key_entry
+                .set_password(&secret_access_key)
+                .map_err(|e| AppError::Keystore(format!("Failed to store secret key: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
     }
 
     /// Retrieve credentials for an endpoint from the keystore
@@ -45,55 +48,66 @@ impl KeystoreService {
         &self,
         endpoint_id: Uuid,
     ) -> AppResult<(String, String)> {
-        // Retrieve access key
-        let access_key_entry = Entry::new(&self.service_name, &format!("{}_access_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+        let service_name = self.service_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let access_key_entry = Entry::new(&service_name, &format!("{}_access_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        let access_key = access_key_entry
-            .get_password()
-            .map_err(|e| AppError::Keystore(format!("Failed to retrieve access key: {}", e)))?;
+            let access_key = access_key_entry
+                .get_password()
+                .map_err(|e| AppError::Keystore(format!("Failed to retrieve access key: {}", e)))?;
 
-        // Retrieve secret key
-        let secret_key_entry = Entry::new(&self.service_name, &format!("{}_secret_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+            let secret_key_entry = Entry::new(&service_name, &format!("{}_secret_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        let secret_key = secret_key_entry
-            .get_password()
-            .map_err(|e| AppError::Keystore(format!("Failed to retrieve secret key: {}", e)))?;
+            let secret_key = secret_key_entry
+                .get_password()
+                .map_err(|e| AppError::Keystore(format!("Failed to retrieve secret key: {}", e)))?;
 
-        Ok((access_key, secret_key))
+            Ok((access_key, secret_key))
+        })
+        .await
+        .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
     }
 
     /// Delete credentials for an endpoint from the keystore
     pub async fn delete_credentials(&self, endpoint_id: Uuid) -> AppResult<()> {
-        // Delete access key
-        let access_key_entry = Entry::new(&self.service_name, &format!("{}_access_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+        let service_name = self.service_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let access_key_entry = Entry::new(&service_name, &format!("{}_access_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        access_key_entry
-            .delete_credential()
-            .map_err(|e| AppError::Keystore(format!("Failed to delete access key: {}", e)))?;
+            access_key_entry
+                .delete_credential()
+                .map_err(|e| AppError::Keystore(format!("Failed to delete access key: {}", e)))?;
 
-        // Delete secret key
-        let secret_key_entry = Entry::new(&self.service_name, &format!("{}_secret_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+            let secret_key_entry = Entry::new(&service_name, &format!("{}_secret_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        secret_key_entry
-            .delete_credential()
-            .map_err(|e| AppError::Keystore(format!("Failed to delete secret key: {}", e)))?;
+            secret_key_entry
+                .delete_credential()
+                .map_err(|e| AppError::Keystore(format!("Failed to delete secret key: {}", e)))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
     }
 
     /// Check if credentials exist for an endpoint
     pub async fn has_credentials(&self, endpoint_id: Uuid) -> AppResult<bool> {
-        let access_key_entry = Entry::new(&self.service_name, &format!("{}_access_key", endpoint_id))
-            .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
+        let service_name = self.service_name.clone();
+        tokio::task::spawn_blocking(move || {
+            let access_key_entry = Entry::new(&service_name, &format!("{}_access_key", endpoint_id))
+                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
 
-        match access_key_entry.get_password() {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+            match access_key_entry.get_password() {
+                Ok(_) => Ok(true),
+                Err(_) => Ok(false),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
     }
 }
 

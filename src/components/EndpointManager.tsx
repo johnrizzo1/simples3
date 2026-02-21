@@ -182,7 +182,7 @@ export function EndpointManager() {
   const getValidationStatusIcon = (status: S3Endpoint["validation_status"]) => {
     if (typeof status === "string") {
       if (status === "Pending") {
-        return <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />;
+        return null;
       } else if (status === "Validated") {
         return <CheckCircle className="w-4 h-4 text-green-500" />;
       }
