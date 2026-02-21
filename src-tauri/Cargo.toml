@@ -1,0 +1,45 @@
+[package]
+name = "simples3"
+version = "0.1.0"
+description = "A simple S3 client desktop application"
+authors = ["John Rizzo"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.10", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dirs = "5.0"
+lazy_static = "1.5"
+
+# S3 SDK
+aws-config = { version = "1.1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.56"
+
+# Keystore
+keyring = { version = "3.6", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "tokio",
+    "crypto-rust",
+] }
+
+# Tauri Plugins
+tauri-plugin-fs = "2.0"
+tauri-plugin-http = "2.0"
+tauri-plugin-store = "2.0"
+tauri-plugin-dialog = "2.0"

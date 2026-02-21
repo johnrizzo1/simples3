@@ -31,7 +31,28 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+Verify compliance with `.specify/memory/constitution.md` principles:
+
+- **Library-First Design**: Is this feature designed as a standalone, reusable library?
+  - [ ] Self-contained with minimal dependencies
+  - [ ] Independently testable
+  - [ ] Clear purpose and public API documented
+
+- **Test-First Development**: Are tests planned before implementation?
+  - [ ] Test strategy defined (unit, integration, contract tests)
+  - [ ] Critical paths and error handling identified for testing
+  - [ ] TDD workflow planned (write tests → verify failure → implement)
+
+- **Simplicity & YAGNI**: Is this the simplest solution for the current need?
+  - [ ] No speculative features or premature abstractions
+  - [ ] Complexity justified (if adding dependencies, patterns, or infrastructure)
+  - [ ] Alternative simpler approaches considered and documented
+
+**Complexity Justifications** (if applicable):
+
+| Addition | Current Need | Simpler Alternative Rejected Because |
+|----------|--------------|-------------------------------------|
+| [e.g., new dependency X] | [specific problem it solves] | [why built-in/simpler option insufficient] |
 
 ## Project Structure
 
@@ -96,9 +117,9 @@ directories captured above]
 
 ## Complexity Tracking
 
-> **Fill ONLY if Constitution Check has violations that must be justified**
+> **Fill ONLY if Constitution Check identified complexity that requires justification**
+> (This section duplicates the table from Constitution Check for quick reference during review)
 
-| Violation | Why Needed | Simpler Alternative Rejected Because |
-|-----------|------------|-------------------------------------|
-| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+| Addition | Current Need | Simpler Alternative Rejected Because |
+|----------|--------------|-------------------------------------|
+| [Reference items from Constitution Check complexity table above] | | |
