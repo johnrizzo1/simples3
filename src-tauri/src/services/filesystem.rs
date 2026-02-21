@@ -116,7 +116,7 @@ impl FilesystemService {
 
     /// Extract file metadata from a path
     async fn extract_file_metadata(&self, path: PathBuf) -> AppResult<LocalFileItem> {
-        let metadata = fs::metadata(&path).map_err(|e| {
+        let metadata = fs::symlink_metadata(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
                 AppError::PermissionDenied(format!(
                     "Permission denied accessing: {}",
