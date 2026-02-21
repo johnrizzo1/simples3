@@ -6,9 +6,11 @@ interface FileItemProps {
   selected: boolean;
   onSelect: (item: LocalFileItem) => void;
   onDoubleClick: (item: LocalFileItem) => void;
+  draggable?: boolean;
+  onDragStart?: (e: React.DragEvent) => void;
 }
 
-export function FileItem({ item, selected, onSelect, onDoubleClick }: FileItemProps) {
+export function FileItem({ item, selected, onSelect, onDoubleClick, draggable = false, onDragStart }: FileItemProps) {
   const formatSize = (bytes: number): string => {
     if (bytes === 0) return "-";
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -23,9 +25,11 @@ export function FileItem({ item, selected, onSelect, onDoubleClick }: FileItemPr
 
   return (
     <div
-      className={`flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 ${
+      className={`flex items-center gap-3 p-2 rounded ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:bg-gray-100 dark:hover:bg-gray-800 ${
         selected ? "bg-blue-100 dark:bg-blue-900" : ""
       }`}
+      draggable={draggable}
+      onDragStart={onDragStart}
       onClick={() => onSelect(item)}
       onDoubleClick={() => onDoubleClick(item)}
     >

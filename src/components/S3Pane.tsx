@@ -29,6 +29,7 @@ export function S3Pane() {
   const [selectedItem, setSelectedItem] = useState<S3Bucket | S3Object | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // Load buckets on mount
   useEffect(() => {
@@ -227,6 +228,101 @@ export function S3Pane() {
     }
   };
 
+  // Drag and drop handlers
+  const handleObjectDragStart = (e: React.DragEvent, object: S3Object) => {
+    console.log("S3Pane dragStart:", object);
+
+    if (object.is_prefix) {
+      console.log("Prefix/folder drag prevented");
+      e.preventDefault();
+      return;
+    }
+
+    const dragData = {
+      bucket: object.bucket,
+      key: object.key,
+    };
+
+    console.log("Setting S3 drag data:", dragData);
+
+    // Store S3 object info for drag-and-drop to local
+    e.dataTransfer.setData("application/x-simples3-s3", JSON.stringify(dragData));
+    e.dataTransfer.effectAllowed = "copy";
+
+    console.log("S3 drag data set successfully");
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    // Only accept local files when we're in objects view (not buckets)
+    if (viewMode === "objects" && e.dataTransfer.types.includes("application/x-simples3-local")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only reset if we're leaving the pane itself, not a child element
+    if (e.currentTarget === e.target) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+
+    console.log("S3Pane handleDrop called");
+    console.log("ViewMode:", viewMode);
+    console.log("DataTransfer types:", e.dataTransfer.types);
+
+    if (viewMode !== "objects") {
+      console.log("Not in objects view, ignoring drop");
+      return;
+    }
+
+    const localData = e.dataTransfer.getData("application/x-simples3-local");
+    console.log("Local data retrieved:", localData);
+
+    if (!localData) {
+      console.log("No local data found in drop");
+      return;
+    }
+
+    try {
+      const { path, name } = JSON.parse(localData);
+
+      // Use current prefix as the upload location
+      const s3Key = currentPrefix ? `${currentPrefix}${name}` : name;
+
+      console.log("Attempting to upload:", { path, name, bucket: currentBucket, s3Key });
+
+      const confirmed = confirm(
+        `Upload file to S3:\nBucket: ${currentBucket}\nKey: ${s3Key}\n\nProceed?`
+      );
+      if (!confirmed) {
+        console.log("Upload canceled by user");
+        return;
+      }
+
+      console.log("Calling upload_file command...");
+      const jobId = await invoke<string>("upload_file", {
+        localPath: path,
+        bucket: currentBucket,
+        s3Key,
+      });
+
+      console.log("Upload queued with job ID:", jobId);
+      alert(`Upload queued! Job ID: ${jobId}\nCheck the Transfers tab to monitor progress.`);
+
+      // Refresh objects to show new file when upload completes
+      setTimeout(() => loadObjects(currentBucket, currentPrefix), 1000);
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert(`Upload failed: ${err}`);
+    }
+  };
+
   // Build breadcrumb from current prefix
   const getBreadcrumbs = (): BreadcrumbPart[] => {
     if (!currentPrefix) return [];
@@ -267,7 +363,12 @@ export function S3Pane() {
   });
 
   return (
-    <div className="h-full flex flex-col">
+    <div
+      className="h-full flex flex-col"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Navigation bar */}
       <div className="p-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
         {viewMode === "objects" && (
@@ -370,7 +471,13 @@ export function S3Pane() {
 
       {/* Content */}
       {!loading && (
-        <div className="flex-1 overflow-y-auto">
+        <div className={`flex-1 overflow-y-auto ${isDragOver ? "bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-400 border-dashed" : ""}`}>
+          {isDragOver && viewMode === "objects" && (
+            <div className="p-8 text-center text-blue-600 dark:text-blue-400 font-medium">
+              Drop local file here to upload to {currentBucket}{currentPrefix ? `/${currentPrefix}` : ""}
+            </div>
+          )}
+
           {viewMode === "buckets" ? (
             // Bucket list
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -405,6 +512,8 @@ export function S3Pane() {
                     selected={selectedItem === object}
                     onSelect={() => handleObjectClick(object)}
                     onDoubleClick={() => handleObjectDoubleClick(object)}
+                    draggable={!object.is_prefix}
+                    onDragStart={(e) => handleObjectDragStart(e, object)}
                   />
                 ))
               )}

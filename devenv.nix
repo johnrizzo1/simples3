@@ -3,6 +3,8 @@
 {
   packages = with pkgs; [
     git
+  ] ++ lib.optionals pkgs.stdenv.isDarwin [
+  ] ++ lib.optionals pkgs.stdenv.isLinux [
     cargo-tauri
     pkg-config
     # Tauri Linux dependencies (GTK/WebKitGTK)
