@@ -22,6 +22,45 @@ A simple, cross-platform desktop client for browsing and managing files on S3-co
 
 ## Install
 
+### Nix / NixOS
+
+Run directly without installing:
+
+```bash
+nix run github:owner/simples3
+```
+
+Or add it to your NixOS / Home Manager configuration:
+
+```nix
+# flake.nix
+{
+  inputs.simples3.url = "github:owner/simples3";
+
+  # ... then in your outputs:
+}
+```
+
+```nix
+# configuration.nix (NixOS) or home.nix (Home Manager)
+{ inputs, system, ... }:
+{
+  environment.systemPackages = [          # NixOS
+    inputs.simples3.packages.${system}.default
+  ];
+
+  # — or —
+
+  home.packages = [                       # Home Manager
+    inputs.simples3.packages.${system}.default
+  ];
+}
+```
+
+A `.desktop` entry and icons are included, so SimpleS3 will appear in your application menu.
+
+### Pre-built Binaries
+
 Download the latest release for your platform from the [Releases](../../releases) page:
 
 | Platform | Format |
@@ -70,6 +109,16 @@ devenv also provides these helper scripts:
 | `format` | Auto-format Rust and TypeScript |
 | `check` | Format check + lint + test |
 | `clean` | Remove build artifacts |
+
+### Using the Nix flake
+
+If you have Nix with flakes enabled but not devenv, you can use the flake directly:
+
+```bash
+nix develop              # enter dev shell with all dependencies
+bun install
+bun run tauri dev
+```
 
 ### Manual Setup
 
@@ -120,7 +169,8 @@ simples3/
 │   │   └── lib.rs          # Library root
 │   ├── Cargo.toml          # Rust dependencies
 │   └── tauri.conf.json     # Tauri configuration
-├── devenv.nix              # Nix dev environment
+├── flake.nix               # Nix flake (package + dev shell)
+├── devenv.nix              # Nix dev environment (devenv)
 └── README.md
 ```
 

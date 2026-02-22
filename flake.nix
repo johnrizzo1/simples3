@@ -79,7 +79,7 @@
                 ./package-lock.json
               ];
             };
-            hash = "sha256-mIB7Y6iByS6Fo8IrpQYxo5MEXXMVux650dMhq5YLgms=";
+            hash = "sha256-OWVs+L+8keoMaZgOk4SXwpsvBu6S3EQ31kG9Mi0wYEc=";
           };
 
           nativeBuildInputs = with pkgs; [
