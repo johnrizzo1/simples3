@@ -23,7 +23,7 @@
   languages.javascript.bun.enable = true;
   languages.typescript.enable = true;
 
-  env = { } // lib.optionals pkgs.stdenv.isLinux {
+  env = { } // lib.optionalAttrs pkgs.stdenv.isLinux {
     # Work around Wayland protocol errors with WebKitGTK on NixOS.
     # Falls back to X11 (via XWayland) which is stable.
     GDK_BACKEND = "x11";
