@@ -1,87 +1,93 @@
 # SimpleS3
 
-A simple, cross-platform S3 client desktop application built with Tauri and Rust.
+A simple, cross-platform desktop client for browsing and managing files on S3-compatible storage. Built with [Tauri v2](https://v2.tauri.app/) and Rust.
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="SimpleS3 icon" />
+</p>
+
+<!-- Add a screenshot here: ![SimpleS3 screenshot](docs/screenshot.png) -->
 
 ## Features
 
-- Dual-pane interface for local filesystem and S3 bucket browsing
-- Support for multiple S3-compatible endpoints (AWS S3, MinIO, Backblaze B2, etc.)
-- Secure credential storage in system keystores
-- File upload/download with pause/resume support
-- Transfer queue management with configurable concurrency
-- Multipart transfers for large files (>100 MB)
+- **Dual-pane file browser** — local filesystem on the left, S3 on the right
+- **Multiple S3 endpoints** — connect to AWS S3, MinIO, Backblaze B2, Cloudflare R2, or any S3-compatible service; switch between them instantly
+- **Secure credentials** — access keys are stored in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+- **Transfer queue** — upload and download files with pause, resume, and cancel support
+- **Multipart transfers** — large files (>100 MB) are transferred in parts automatically
+- **Dark mode** — follows your system theme or can be set manually
+- **Keyboard shortcuts** — F5 to refresh, Delete to delete, Ctrl+U to upload, Ctrl+D to download
+- **Offline detection** — active transfers are paused automatically when network connectivity drops and resumed when it returns
 
-## Project Status
+## Install
 
-🎉 **PHASES 1-9 COMPLETE** - Fully Functional S3 Client!
+Download the latest release for your platform from the [Releases](../../releases) page:
 
-✅ **Phase 1: Setup** (11/11 tasks)
-✅ **Phase 2: Foundation** (13/13 tasks)
-✅ **Phase 3: Local File Browser** (13/13 tasks)
-✅ **Phase 4: S3 Endpoint Management** (27/27 tasks)
-✅ **Phase 5: Browse S3 Buckets** (16/16 tasks)
-✅ **Phase 6: File Uploads** (24/34 tasks - Core complete)
-✅ **Phase 7: File Downloads** (Core complete)
-✅ **Phase 8: Delete Operations** (Core complete)
-✅ **Phase 9: UI Polish & Settings** (Complete)
+| Platform | Format |
+|----------|--------|
+| Linux    | `.deb`, `.AppImage` |
+| Windows  | `.msi`, `.exe` (NSIS) |
+| macOS    | `.dmg` |
 
-**What Works Now:**
-- ✅ Browse local filesystem and S3 buckets
-- ✅ Add/edit/delete S3 endpoints with validation
-- ✅ Upload files (simple and multipart) with UI button
-- ✅ Download files from S3 with UI button
-- ✅ Delete local and S3 files with confirmation
-- ✅ Transfer queue with pause/resume/cancel
-- ✅ Progress tracking with live updates
-- ✅ Secure keystore integration
-- ✅ Professional dual-pane UI
-- ✅ Settings panel for configuration
-- ✅ Keyboard shortcuts (F5: refresh, Delete: delete, Ctrl/Cmd+U: upload, Ctrl/Cmd+D: download)
+## Development Setup
 
-See [FINAL_STATUS.md](./FINAL_STATUS.md) for complete details.
+### Using devenv (NixOS / Nix)
 
-## Prerequisites
-
-Before you begin, ensure you have the following installed:
-
-- **Node.js** 18+ LTS
-- **Rust** 1.75+ (required for building)
-- **Platform-specific dependencies** (see [quickstart.md](./specs/001-s3-client/quickstart.md))
-
-## Installation
-
-### 1. Install Rust
+The recommended way to set up the development environment is with [devenv](https://devenv.sh/). This handles all system dependencies automatically.
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup update
+# Enter the dev shell (installs Rust, Bun, Tauri CLI, GTK, WebKitGTK, etc.)
+devenv shell
+
+# Install frontend dependencies
+bun install
+
+# Start the app in development mode
+dev
+# — or equivalently —
+bun run tauri dev
 ```
 
-### 2. Install Dependencies
+devenv also provides these helper scripts:
 
-Frontend dependencies are already installed. If you need to reinstall:
+| Command | Description |
+|---------|-------------|
+| `dev` | Install deps and launch the app |
+| `build` | Production build |
+| `test` | Run Rust and frontend tests |
+| `lint` | Run clippy and eslint |
+| `format` | Auto-format Rust and TypeScript |
+| `check` | Format check + lint + test |
+| `clean` | Remove build artifacts |
+
+### Manual Setup
+
+If you are not using Nix, install the following prerequisites:
+
+1. **Rust** 1.75+ — <https://rustup.rs/>
+2. **Bun** — <https://bun.sh/>
+3. **Linux system libraries** (Linux only):
+   ```bash
+   sudo apt-get install -y \
+     libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+     librsvg2-dev patchelf libsoup-3.0-dev \
+     libjavascriptcoregtk-4.1-dev libssl-dev
+   ```
+
+Then:
 
 ```bash
-npm install
+bun install
+bun run tauri dev
 ```
-
-## Development
-
-### Running in Development Mode
-
-⚠️ **Note**: You need Rust installed to run the application.
-
-```bash
-npm run tauri dev
-```
-
-This will start the Vite development server and launch the Tauri application.
 
 ### Building for Production
 
 ```bash
-npm run tauri build
+bun run tauri build
 ```
+
+Build artifacts are written to `src-tauri/target/release/bundle/`.
 
 ## Project Structure
 
@@ -89,94 +95,58 @@ npm run tauri build
 simples3/
 ├── src/                    # Frontend (React + TypeScript)
 │   ├── components/         # UI components
-│   ├── services/           # API service wrappers
-│   ├── hooks/              # React hooks
-│   ├── styles/             # CSS files
-│   ├── App.tsx             # Main app component
+│   ├── contexts/           # React contexts (clipboard)
+│   ├── hooks/              # React hooks (theme, network)
+│   ├── styles/             # CSS / Tailwind
+│   ├── types/              # TypeScript type definitions
+│   ├── App.tsx             # Main application component
 │   └── main.tsx            # Entry point
-├── src-tauri/              # Backend (Rust)
+├── src-tauri/              # Backend (Rust + Tauri)
 │   ├── src/
+│   │   ├── commands/       # Tauri IPC commands
 │   │   ├── models/         # Data models
-│   │   ├── services/       # Business logic
-│   │   ├── commands/       # Tauri commands (API)
-│   │   ├── utils/          # Helper functions
-│   │   ├── main.rs         # App entry point
-│   │   └── lib.rs          # Library exports
+│   │   ├── services/       # S3, config, transfer logic
+│   │   └── lib.rs          # Library root
 │   ├── Cargo.toml          # Rust dependencies
 │   └── tauri.conf.json     # Tauri configuration
-├── specs/                  # Feature specifications
-│   └── 001-s3-client/      # Current feature spec
-├── tests/                  # Tests
-│   ├── unit/               # Unit tests
-│   └── integration/        # Integration tests
-└── README.md               # This file
+├── devenv.nix              # Nix dev environment
+└── README.md
 ```
-
-## Documentation
-
-- **[Quickstart Guide](./specs/001-s3-client/quickstart.md)** - Detailed setup instructions
-- **[Feature Specification](./specs/001-s3-client/spec.md)** - Requirements and user stories
-- **[Implementation Plan](./specs/001-s3-client/plan.md)** - Technical approach
-- **[Data Model](./specs/001-s3-client/data-model.md)** - Entity definitions
-- **[API Contracts](./specs/001-s3-client/contracts/)** - Tauri command specifications
-- **[Task List](./specs/001-s3-client/tasks.md)** - Implementation tasks
-
-## Next Steps
-
-1. Install Rust (see Prerequisites above)
-2. Review the [task list](./specs/001-s3-client/tasks.md)
-3. Start implementing following the TDD approach
-4. Run tests frequently during development
 
 ## Testing
 
-### Rust Tests
-
 ```bash
-cd src-tauri
-cargo test
+# Rust tests
+cd src-tauri && cargo test
+
+# Frontend tests
+bun test
+
+# Linting
+cd src-tauri && cargo clippy
+bun run lint
 ```
 
-### Frontend Tests
+### Local S3 Testing with MinIO
+
+[MinIO](https://min.io/) provides an S3-compatible server you can run locally:
 
 ```bash
-npm test
-```
-
-### Linting
-
-```bash
-# Rust
-cd src-tauri
-cargo clippy
-
-# Frontend
-npm run lint
-```
-
-## Local S3 Testing
-
-Use MinIO for local S3-compatible testing:
-
-```bash
-# Install MinIO
-brew install minio/stable/minio  # macOS
-
-# Start MinIO server
 mkdir -p ~/minio-data
 minio server ~/minio-data --console-address ":9001"
-
-# Default credentials:
-# Access Key: minioadmin
-# Secret Key: minioadmin
 ```
 
-See [quickstart.md](./specs/001-s3-client/quickstart.md) for detailed MinIO setup.
-
-## License
-
-[License information to be added]
+Default credentials: `minioadmin` / `minioadmin`. Add a new endpoint in SimpleS3 pointing to `http://localhost:9000`.
 
 ## Contributing
 
-[Contributing guidelines to be added]
+Contributions are welcome! Please open an issue or pull request.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b my-feature`)
+3. Commit your changes
+4. Push to your fork and open a pull request
+
+## License
+
+SimpleS3 is licensed under the [GNU General Public License v3.0](LICENSE.md).
