@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { AppConfig, Theme } from "../types/models";
 import { Save, RefreshCw } from "lucide-react";
 
-export function SettingsPanel() {
+interface SettingsPanelProps {
+  onConfigSaved?: () => void;
+  onThemeChange?: (theme: Theme) => void;
+}
+
+export function SettingsPanel({ onConfigSaved, onThemeChange }: SettingsPanelProps) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -37,6 +42,7 @@ export function SettingsPanel() {
       await invoke("update_config", { config });
       setSuccess("Settings saved successfully!");
       setTimeout(() => setSuccess(null), 3000);
+      onConfigSaved?.();
     } catch (err) {
       setError(`Failed to save config: ${err}`);
     } finally {
@@ -90,7 +96,11 @@ export function SettingsPanel() {
             <label className="block text-sm font-medium mb-2">Theme</label>
             <select
               value={config.theme}
-              onChange={(e) => updateConfig({ theme: e.target.value as Theme })}
+              onChange={(e) => {
+                const newTheme = e.target.value as Theme;
+                updateConfig({ theme: newTheme });
+                onThemeChange?.(newTheme);
+              }}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
             >
               <option value="Light">Light</option>
@@ -132,20 +142,6 @@ export function SettingsPanel() {
             />
             <label htmlFor="auto-validate" className="text-sm font-medium">
               Auto-validate endpoints on startup
-            </label>
-          </div>
-
-          {/* Show hidden files */}
-          <div className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              id="show-hidden"
-              checked={config.show_hidden_files}
-              onChange={(e) => updateConfig({ show_hidden_files: e.target.checked })}
-              className="w-4 h-4"
-            />
-            <label htmlFor="show-hidden" className="text-sm font-medium">
-              Show hidden files and folders
             </label>
           </div>
 

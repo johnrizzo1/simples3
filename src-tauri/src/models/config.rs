@@ -20,6 +20,25 @@ pub enum Theme {
     System,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppState {
+    pub current_view: String,      // "files", "endpoints", "settings"
+    pub local_path: Option<String>,
+    pub s3_bucket: Option<String>,
+    pub s3_prefix: Option<String>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            current_view: "files".to_string(),
+            local_path: None,
+            s3_bucket: None,
+            s3_prefix: None,
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {

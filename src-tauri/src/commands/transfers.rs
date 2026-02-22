@@ -366,9 +366,13 @@ pub async fn download_prefix(
     Ok(job_ids)
 }
 
-/// Set the maximum number of concurrent transfers
+/// Clear completed, failed, and cancelled transfers
 #[tauri::command]
-pub async fn set_concurrency_limit(_limit: usize) -> Result<(), String> {
-    // TODO: Implement in TransferQueue
-    Ok(())
+pub async fn clear_finished_transfers() -> Result<(), String> {
+    TRANSFER_SERVICE
+        .lock()
+        .await
+        .clear_finished()
+        .await
+        .map_err(|e| e.to_string())
 }

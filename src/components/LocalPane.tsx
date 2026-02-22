@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
-import { LocalFileItem } from "../types/models";
+import { LocalFileItem, ConflictItem } from "../types/models";
 import { FileItem } from "./FileItem";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { InputDialog } from "./InputDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ConflictDialog } from "./ConflictDialog";
 import { useClipboard } from "../contexts/ClipboardContext";
 import { ChevronUp, Home, RefreshCw, Upload, Trash2, FolderPlus, Copy, Clipboard, Eye, EyeOff } from "lucide-react";
 
-export function LocalPane() {
+interface LocalPaneProps {
+  initialPath?: string;
+}
+
+export function LocalPane({ initialPath }: LocalPaneProps) {
   const [currentPath, setCurrentPath] = useState<string>("");
   const [items, setItems] = useState<LocalFileItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<LocalFileItem[]>([]);
@@ -76,14 +81,45 @@ export function LocalPane() {
     }
   }, []);
 
+  // Promise-based conflict dialog helper
+  const [conflictDialog, setConflictDialog] = useState<{ conflicts: ConflictItem[]; onResolve: (items: ConflictItem[]) => void } | null>(null);
+  const conflictResolveRef = useRef<((items: ConflictItem[] | null) => void) | null>(null);
+
+  const showConflicts = useCallback((conflicts: ConflictItem[]): Promise<ConflictItem[] | null> => {
+    return new Promise((resolve) => {
+      conflictResolveRef.current = resolve;
+      setConflictDialog({
+        conflicts,
+        onResolve: (items) => {
+          setConflictDialog(null);
+          conflictResolveRef.current = null;
+          resolve(items);
+        },
+      });
+    });
+  }, []);
+
+  const cancelConflicts = useCallback(() => {
+    setConflictDialog(null);
+    if (conflictResolveRef.current) {
+      conflictResolveRef.current(null);
+      conflictResolveRef.current = null;
+    }
+  }, []);
+
   const filteredItems = useMemo(
     () => showHidden ? items : items.filter((i) => !i.name.startsWith(".")),
     [items, showHidden]
   );
 
-  // Load home directory on mount
+  // Load initial path or home directory on mount
   useEffect(() => {
-    loadHomeDirectory();
+    if (initialPath) {
+      setCurrentPath(initialPath);
+      loadDirectory(initialPath);
+    } else {
+      loadHomeDirectory();
+    }
   }, []);
 
   // Keyboard shortcuts
@@ -351,6 +387,46 @@ export function LocalPane() {
       const draggedItems: Array<{ bucket: string; key: string; is_prefix: boolean }> =
         Array.isArray(parsed) ? parsed : [parsed];
 
+      // Check for local file conflicts on non-prefix items
+      const fileItems = draggedItems.filter((item) => !item.is_prefix);
+      const filePaths = fileItems.map((item) => {
+        const fileName = item.key.split("/").pop() || "download";
+        return { localPath: `${currentPath}/${fileName}`, name: fileName };
+      });
+
+      // Check conflicts
+      const conflicts: ConflictItem[] = [];
+      for (const file of filePaths) {
+        try {
+          const exists = await invoke<boolean>("check_local_file_exists", { path: file.localPath });
+          if (exists) {
+            conflicts.push({ name: file.name, path: file.localPath, resolution: "overwrite" });
+          }
+        } catch {
+          // If check fails, assume no conflict
+        }
+      }
+
+      let resolvedConflicts: ConflictItem[] | null = null;
+      if (conflicts.length > 0) {
+        resolvedConflicts = await showConflicts(conflicts);
+        if (!resolvedConflicts) return;
+      }
+
+      // Build a map of resolved file names to new paths
+      const resolvedPathMap = new Map<string, string>();
+      if (resolvedConflicts) {
+        for (const item of resolvedConflicts) {
+          if (item.resolution === "skip") {
+            resolvedPathMap.set(item.name, ""); // empty means skip
+          } else if (item.resolution === "rename" && item.newName) {
+            resolvedPathMap.set(item.name, `${currentPath}/${item.newName}`);
+          } else {
+            resolvedPathMap.set(item.name, item.path);
+          }
+        }
+      }
+
       for (const item of draggedItems) {
         if (item.is_prefix) {
           const folderName = item.key.split("/").filter((p: string) => p).pop() || "download";
@@ -362,7 +438,9 @@ export function LocalPane() {
           });
         } else {
           const fileName = item.key.split("/").pop() || "download";
-          const localPath = `${currentPath}/${fileName}`;
+          const resolvedPath = resolvedPathMap.get(fileName);
+          if (resolvedPath === "") continue; // skipped
+          const localPath = resolvedPath || `${currentPath}/${fileName}`;
           await invoke<string>("download_file", {
             bucket: item.bucket,
             s3Key: item.key,
@@ -485,7 +563,7 @@ export function LocalPane() {
       onDrop={handleDrop}
     >
       {/* Header with navigation */}
-      <div className="flex items-center gap-2 p-3 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700">
         <button
           onClick={loadHomeDirectory}
           className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -636,6 +714,14 @@ export function LocalPane() {
           message={confirmDialog.message}
           onConfirm={confirmDialog.onConfirm}
           onCancel={cancelConfirm}
+        />
+      )}
+
+      {conflictDialog && (
+        <ConflictDialog
+          conflicts={conflictDialog.conflicts}
+          onResolve={conflictDialog.onResolve}
+          onCancel={cancelConflicts}
         />
       )}
     </div>

@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
-import { S3Bucket, S3Object } from "../types/models";
+import { S3Bucket, S3Endpoint, S3Object, ConflictItem, DiskSpaceInfo } from "../types/models";
 import { FileItem } from "./FileItem";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import { InputDialog } from "./InputDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ConflictDialog } from "./ConflictDialog";
 import { useClipboard } from "../contexts/ClipboardContext";
 import {
   Home,
@@ -28,7 +29,15 @@ interface BreadcrumbPart {
   prefix: string;
 }
 
-export function S3Pane() {
+interface S3PaneProps {
+  initialBucket?: string;
+  initialPrefix?: string;
+  refreshKey?: number;
+  endpoints?: S3Endpoint[];
+  onEndpointChange?: (endpointId: string) => void;
+}
+
+export function S3Pane({ initialBucket, initialPrefix, refreshKey, endpoints, onEndpointChange }: S3PaneProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("buckets");
   const [buckets, setBuckets] = useState<S3Bucket[]>([]);
   const [objects, setObjects] = useState<S3Object[]>([]);
@@ -98,6 +107,32 @@ export function S3Pane() {
     }
   }, []);
 
+  // Promise-based conflict dialog helper
+  const [conflictDialog, setConflictDialog] = useState<{ conflicts: ConflictItem[]; onResolve: (items: ConflictItem[]) => void } | null>(null);
+  const conflictResolveRef = useRef<((items: ConflictItem[] | null) => void) | null>(null);
+
+  const showConflicts = useCallback((conflicts: ConflictItem[]): Promise<ConflictItem[] | null> => {
+    return new Promise((resolve) => {
+      conflictResolveRef.current = resolve;
+      setConflictDialog({
+        conflicts,
+        onResolve: (items) => {
+          setConflictDialog(null);
+          conflictResolveRef.current = null;
+          resolve(items);
+        },
+      });
+    });
+  }, []);
+
+  const cancelConflicts = useCallback(() => {
+    setConflictDialog(null);
+    if (conflictResolveRef.current) {
+      conflictResolveRef.current(null);
+      conflictResolveRef.current = null;
+    }
+  }, []);
+
   // Resolve ~ in paths to the actual home directory
   const resolvePath = async (path: string): Promise<string> => {
     if (path.startsWith("~/") || path === "~") {
@@ -107,10 +142,15 @@ export function S3Pane() {
     return path;
   };
 
-  // Load buckets on mount
+  // Load buckets on mount, or when endpoint changes (refreshKey)
   useEffect(() => {
-    loadBuckets();
-  }, []);
+    if (refreshKey === 0 && initialBucket) {
+      loadObjects(initialBucket, initialPrefix || "");
+    } else {
+      setViewMode("buckets");
+      loadBuckets();
+    }
+  }, [refreshKey]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -270,6 +310,70 @@ export function S3Pane() {
     }
   };
 
+  // Check disk space before downloads and warn if insufficient
+  const checkDiskSpace = async (localDir: string, totalSize: number): Promise<boolean> => {
+    try {
+      const diskInfo = await invoke<DiskSpaceInfo>("get_disk_space", { path: localDir });
+      if (totalSize > diskInfo.available_bytes) {
+        const needed = (totalSize / 1024 / 1024).toFixed(1);
+        const available = (diskInfo.available_bytes / 1024 / 1024).toFixed(1);
+        const ok = await showConfirm(
+          "Low Disk Space",
+          `Download requires ~${needed} MB but only ${available} MB is available. Continue anyway?`
+        );
+        return ok;
+      }
+    } catch {
+      // If disk space check fails, continue anyway
+    }
+    return true;
+  };
+
+  // Check for local file conflicts before downloading
+  const checkLocalConflicts = async (files: Array<{ localPath: string; name: string }>): Promise<Array<{ localPath: string; name: string }> | null> => {
+    const conflicts: ConflictItem[] = [];
+    for (const file of files) {
+      try {
+        const exists = await invoke<boolean>("check_local_file_exists", { path: file.localPath });
+        if (exists) {
+          conflicts.push({ name: file.name, path: file.localPath, resolution: "overwrite" });
+        }
+      } catch {
+        // If check fails, assume no conflict
+      }
+    }
+
+    if (conflicts.length === 0) return files;
+
+    const resolved = await showConflicts(conflicts);
+    if (!resolved) return null;
+
+    // Apply resolutions
+    const result: Array<{ localPath: string; name: string }> = [];
+    const conflictPaths = new Set(resolved.map((c) => c.path));
+
+    // Add non-conflicting files
+    for (const file of files) {
+      if (!conflictPaths.has(file.localPath)) {
+        result.push(file);
+      }
+    }
+
+    // Add resolved conflicts
+    for (const item of resolved) {
+      if (item.resolution === "skip") continue;
+      if (item.resolution === "rename" && item.newName) {
+        const dir = item.path.substring(0, item.path.lastIndexOf("/"));
+        result.push({ localPath: `${dir}/${item.newName}`, name: item.newName });
+      } else {
+        // overwrite
+        result.push({ localPath: item.path, name: item.name });
+      }
+    }
+
+    return result;
+  };
+
   const handleDownload = async () => {
     const downloadable = selectedObjects.filter((o) => !o.is_prefix);
     if (downloadable.length === 0) {
@@ -283,11 +387,20 @@ export function S3Pane() {
       const localPathInput = await showInput("Download from S3", "Local path:", `~/Downloads/${fileName}`);
       if (!localPathInput) return;
       const localPath = await resolvePath(localPathInput);
+
+      // Disk space check
+      const spaceOk = await checkDiskSpace(localPath, obj.size);
+      if (!spaceOk) return;
+
+      // Conflict check
+      const resolved = await checkLocalConflicts([{ localPath, name: fileName }]);
+      if (!resolved || resolved.length === 0) return;
+
       try {
         await invoke<string>("download_file", {
           bucket: obj.bucket,
           s3Key: obj.key,
-          localPath,
+          localPath: resolved[0].localPath,
         });
       } catch (err) {
         await message(`Download failed: ${err}`, { title: "Error", kind: "error" });
@@ -296,19 +409,39 @@ export function S3Pane() {
       const localDirInput = await showInput("Download from S3", "Local directory:", "~/Downloads");
       if (!localDirInput) return;
       const localDir = await resolvePath(localDirInput);
+
+      // Disk space check
+      const totalSize = downloadable.reduce((sum, o) => sum + o.size, 0);
+      const spaceOk = await checkDiskSpace(localDir, totalSize);
+      if (!spaceOk) return;
+
+      // Build file list and check conflicts
+      const fileList = downloadable.map((obj) => {
+        const fileName = obj.key.split("/").pop() || "download";
+        return { localPath: `${localDir}/${fileName}`, name: fileName, s3Key: obj.key, bucket: obj.bucket };
+      });
+
+      const resolved = await checkLocalConflicts(fileList.map((f) => ({ localPath: f.localPath, name: f.name })));
+      if (!resolved) return;
+
+      // Match resolved paths back to S3 keys
+      const resolvedPaths = new Map(resolved.map((r) => [r.name, r.localPath]));
+      const toDownload = fileList
+        .filter((f) => resolvedPaths.has(f.name))
+        .map((f) => ({ ...f, localPath: resolvedPaths.get(f.name)! }));
+
       const results = await Promise.allSettled(
-        downloadable.map((obj) => {
-          const fileName = obj.key.split("/").pop() || "download";
-          return invoke<string>("download_file", {
-            bucket: obj.bucket,
-            s3Key: obj.key,
-            localPath: `${localDir}/${fileName}`,
-          });
-        })
+        toDownload.map((f) =>
+          invoke<string>("download_file", {
+            bucket: f.bucket,
+            s3Key: f.s3Key,
+            localPath: f.localPath,
+          })
+        )
       );
       const failures = results.filter((r) => r.status === "rejected");
       if (failures.length > 0) {
-        await message(`${failures.length} of ${downloadable.length} download(s) failed to queue.`, { title: "Error", kind: "error" });
+        await message(`${failures.length} of ${toDownload.length} download(s) failed to queue.`, { title: "Error", kind: "error" });
       }
     }
   };
@@ -375,6 +508,53 @@ export function S3Pane() {
     }
   };
 
+  // Check for S3 object conflicts before uploading
+  const checkS3Conflicts = async (files: Array<{ name: string; s3Key: string; localPath: string; is_directory: boolean }>): Promise<Array<{ name: string; s3Key: string; localPath: string; is_directory: boolean }> | null> => {
+    const fileItems = files.filter((f) => !f.is_directory);
+    const conflicts: ConflictItem[] = [];
+
+    for (const file of fileItems) {
+      try {
+        const exists = await invoke<boolean>("check_object_exists", { bucket: currentBucket, key: file.s3Key });
+        if (exists) {
+          conflicts.push({ name: file.name, path: file.s3Key, resolution: "overwrite" });
+        }
+      } catch {
+        // If check fails, assume no conflict
+      }
+    }
+
+    if (conflicts.length === 0) return files;
+
+    const resolved = await showConflicts(conflicts);
+    if (!resolved) return null;
+
+    const result: Array<{ name: string; s3Key: string; localPath: string; is_directory: boolean }> = [];
+    const conflictKeys = new Set(resolved.map((c) => c.path));
+
+    // Add non-conflicting items (including directories)
+    for (const file of files) {
+      if (!conflictKeys.has(file.s3Key)) {
+        result.push(file);
+      }
+    }
+
+    // Add resolved conflicts
+    for (const item of resolved) {
+      if (item.resolution === "skip") continue;
+      const original = fileItems.find((f) => f.s3Key === item.path);
+      if (!original) continue;
+      if (item.resolution === "rename" && item.newName) {
+        const prefix = item.path.substring(0, item.path.lastIndexOf("/") + 1);
+        result.push({ ...original, s3Key: `${prefix}${item.newName}`, name: item.newName });
+      } else {
+        result.push(original);
+      }
+    }
+
+    return result;
+  };
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -389,20 +569,32 @@ export function S3Pane() {
       const draggedItems: Array<{ path: string; name: string; is_directory: boolean }> =
         Array.isArray(parsed) ? parsed : [parsed];
 
-      for (const item of draggedItems) {
+      // Build upload items with S3 keys
+      const uploadItems = draggedItems.map((item) => ({
+        name: item.name,
+        s3Key: item.is_directory
+          ? (currentPrefix ? `${currentPrefix}${item.name}/` : `${item.name}/`)
+          : (currentPrefix ? `${currentPrefix}${item.name}` : item.name),
+        localPath: item.path,
+        is_directory: item.is_directory,
+      }));
+
+      // Check for conflicts on non-directory items
+      const resolved = await checkS3Conflicts(uploadItems);
+      if (!resolved) return;
+
+      for (const item of resolved) {
         if (item.is_directory) {
-          const s3Prefix = currentPrefix ? `${currentPrefix}${item.name}/` : `${item.name}/`;
           await invoke<string[]>("upload_directory", {
-            localPath: item.path,
+            localPath: item.localPath,
             bucket: currentBucket,
-            s3Prefix,
+            s3Prefix: item.s3Key,
           });
         } else {
-          const s3Key = currentPrefix ? `${currentPrefix}${item.name}` : item.name;
           await invoke<string>("upload_file", {
-            localPath: item.path,
+            localPath: item.localPath,
             bucket: currentBucket,
-            s3Key,
+            s3Key: item.s3Key,
           });
         }
       }
@@ -594,7 +786,7 @@ export function S3Pane() {
       onDrop={handleDrop}
     >
       {/* Navigation bar */}
-      <div className="p-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
+      <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
         {viewMode === "objects" && (
           <>
             <button
@@ -676,6 +868,20 @@ export function S3Pane() {
             </>
           )}
         </div>
+
+        {/* Endpoint switcher */}
+        {endpoints && endpoints.length > 0 && (
+          <select
+            className="px-2 py-0 text-sm bg-transparent truncate max-w-[200px] flex-shrink-0"
+            value={endpoints.find((ep) => ep.is_active)?.id ?? ""}
+            onChange={(e) => onEndpointChange?.(e.target.value)}
+            title="Active S3 Endpoint"
+          >
+            {endpoints.map((ep) => (
+              <option key={ep.id} value={ep.id}>{ep.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Error display */}
@@ -838,6 +1044,14 @@ export function S3Pane() {
           message={confirmDialog.message}
           onConfirm={confirmDialog.onConfirm}
           onCancel={cancelConfirm}
+        />
+      )}
+
+      {conflictDialog && (
+        <ConflictDialog
+          conflicts={conflictDialog.conflicts}
+          onResolve={conflictDialog.onResolve}
+          onCancel={cancelConflicts}
         />
       )}
     </div>

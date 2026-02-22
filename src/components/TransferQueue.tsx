@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowLeftRight,
+  Trash2,
 } from "lucide-react";
 
 export function TransferQueue() {
@@ -66,6 +67,15 @@ export function TransferQueue() {
     }
   };
 
+  const handleClearHistory = async () => {
+    try {
+      await invoke("clear_finished_transfers");
+      await loadTransfers();
+    } catch (err) {
+      console.error("Failed to clear history:", err);
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "Queued":
@@ -100,14 +110,6 @@ export function TransferQueue() {
       default:
         return "text-gray-500";
     }
-  };
-
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return "0 B";
-    const k = 1024;
-    const sizes = ["B", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
   const formatFileName = (job: TransferJob): string => {
@@ -194,6 +196,19 @@ export function TransferQueue() {
           </span>
         )}
         <div className="flex-1" />
+        {expanded && (completedCount > 0 || failedCount > 0) && (
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleClearHistory();
+            }}
+            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 flex-shrink-0"
+            title="Clear finished transfers"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </span>
+        )}
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
         ) : (
@@ -248,6 +263,11 @@ export function TransferQueue() {
                           ? `${calculateProgress(transfer).toFixed(0)}%`
                           : transfer.status}
                       </span>
+                      {transfer.retry_count > 0 && (
+                        <span className="text-xs text-yellow-500">
+                          Retry {transfer.retry_count}/{transfer.max_retries}
+                        </span>
+                      )}
                     </div>
 
                     {/* Destination */}

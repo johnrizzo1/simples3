@@ -1,5 +1,6 @@
 use crate::models::LocalFileItem;
 use crate::services::FilesystemService;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// List files and directories at the given path
@@ -74,4 +75,41 @@ pub fn copy_local_items(sources: Vec<String>, dest_dir: String) -> Result<(), St
     service
         .copy_items(source_paths, dest_path)
         .map_err(|e| e.to_string())
+}
+
+/// Check if a local file exists at the given path
+#[tauri::command]
+pub fn check_local_file_exists(path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&path).exists())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskSpaceInfo {
+    pub available_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Get available disk space at a given path
+#[tauri::command]
+pub fn get_disk_space(path: String) -> Result<DiskSpaceInfo, String> {
+    use fs2::available_space;
+    use fs2::total_space;
+
+    let path = PathBuf::from(&path);
+    // Use parent directory if path doesn't exist yet
+    let check_path = if path.exists() {
+        path
+    } else {
+        path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/"))
+    };
+
+    let available = available_space(&check_path).map_err(|e| format!("Failed to get available space: {}", e))?;
+    let total = total_space(&check_path).map_err(|e| format!("Failed to get total space: {}", e))?;
+
+    Ok(DiskSpaceInfo {
+        available_bytes: available,
+        total_bytes: total,
+    })
 }

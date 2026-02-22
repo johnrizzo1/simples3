@@ -77,12 +77,35 @@ export interface TransferJob {
   created_at: string; // ISO 8601 datetime
   started_at: string | null; // ISO 8601 datetime
   completed_at: string | null; // ISO 8601 datetime
+  retry_count: number;
+  max_retries: number;
 }
 
 export enum Theme {
   Light = "Light",
   Dark = "Dark",
   System = "System",
+}
+
+export interface DiskSpaceInfo {
+  available_bytes: number;
+  total_bytes: number;
+}
+
+export type ConflictResolution = "overwrite" | "skip" | "rename";
+
+export interface ConflictItem {
+  name: string;
+  path: string; // source path (local or S3 key)
+  resolution: ConflictResolution;
+  newName?: string; // only when resolution is "rename"
+}
+
+export interface AppState {
+  current_view: string; // "files" | "endpoints" | "settings"
+  local_path: string | null;
+  s3_bucket: string | null;
+  s3_prefix: string | null;
 }
 
 export interface AppConfig {

@@ -15,19 +15,90 @@ use uuid::Uuid;
 
 const MULTIPART_THRESHOLD: u64 = 100 * 1024 * 1024; // 100 MB
 const MULTIPART_CHUNK_SIZE: u64 = 10 * 1024 * 1024; // 10 MB per part
+const MAX_RETRY_DELAY_MS: u64 = 30_000; // Cap retry delay at 30 seconds
+const BASE_RETRY_DELAY_MS: u64 = 1_000; // 1 second base delay
 
 /// Service for managing file transfer operations
 pub struct TransferService {
     jobs: Arc<Mutex<Vec<TransferJob>>>,
     s3_client_service: S3ClientService,
+    persist_path: PathBuf,
 }
 
 impl TransferService {
     pub fn new() -> Self {
-        Self {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("com.simples3.app");
+        std::fs::create_dir_all(&config_dir).ok();
+        let persist_path = config_dir.join("transfers.json");
+
+        let mut service = Self {
             jobs: Arc::new(Mutex::new(Vec::new())),
             s3_client_service: S3ClientService::new(),
+            persist_path,
+        };
+
+        // Load persisted transfers on startup (blocking since this is init)
+        service.load_from_disk_sync();
+        service
+    }
+
+    /// Load persisted transfer state from disk (sync, for init)
+    fn load_from_disk_sync(&mut self) {
+        if !self.persist_path.exists() {
+            return;
         }
+        match std::fs::read_to_string(&self.persist_path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<TransferJob>>(&content) {
+                    Ok(mut jobs) => {
+                        // Convert any Active jobs to Paused (they were interrupted)
+                        for job in jobs.iter_mut() {
+                            if job.status == TransferStatus::Active {
+                                job.status = TransferStatus::Paused;
+                            }
+                        }
+                        *self.jobs.blocking_lock() = jobs;
+                        tracing::info!("Loaded {} persisted transfers", self.jobs.blocking_lock().len());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse transfers.json: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read transfers.json: {}", e);
+            }
+        }
+    }
+
+    /// Save current transfer state to disk
+    async fn save_to_disk(&self) {
+        let jobs = self.jobs.lock().await;
+        match serde_json::to_string_pretty(&*jobs) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&self.persist_path, content) {
+                    tracing::warn!("Failed to write transfers.json: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize transfers: {}", e);
+            }
+        }
+    }
+
+    /// Clear completed, failed, and cancelled transfers
+    pub async fn clear_finished(&self) -> AppResult<()> {
+        let mut jobs = self.jobs.lock().await;
+        jobs.retain(|j| {
+            j.status != TransferStatus::Completed
+                && j.status != TransferStatus::Failed
+                && j.status != TransferStatus::Cancelled
+        });
+        drop(jobs);
+        self.save_to_disk().await;
+        Ok(())
     }
 
     /// Create S3 client from endpoint
@@ -96,6 +167,7 @@ impl TransferService {
         let mut jobs = self.jobs.lock().await;
         jobs.push(job);
         drop(jobs);
+        self.save_to_disk().await;
 
         // Start upload in background
         let service = self.clone_for_background();
@@ -162,6 +234,8 @@ impl TransferService {
                 }
             }
         }
+        drop(jobs);
+        self.save_to_disk().await;
 
         result
     }
@@ -169,30 +243,40 @@ impl TransferService {
     /// Simple upload for files <= 100MB
     async fn simple_upload(
         &self,
-        _job_id: Uuid,
+        job_id: Uuid,
         endpoint: &S3Endpoint,
         local_path: &str,
         bucket: &str,
         s3_key: &str,
     ) -> AppResult<()> {
         let client = self.create_client(endpoint).await?;
+        let local_path = local_path.to_string();
+        let bucket = bucket.to_string();
+        let s3_key = s3_key.to_string();
 
-        // Read entire file into memory
-        let body = ByteStream::from_path(PathBuf::from(local_path))
-            .await
-            .map_err(|e| AppError::S3(format!("Failed to read file: {}", e)))?;
+        self.retry_s3_op(job_id, 3, || {
+            let client = client.clone();
+            let local_path = local_path.clone();
+            let bucket = bucket.clone();
+            let s3_key = s3_key.clone();
+            async move {
+                let body = ByteStream::from_path(PathBuf::from(&local_path))
+                    .await
+                    .map_err(|e| AppError::S3(format!("Failed to read file: {}", e)))?;
 
-        // Upload
-        client
-            .put_object()
-            .bucket(bucket)
-            .key(s3_key)
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| AppError::S3(format!("Upload failed: {}", e)))?;
+                client
+                    .put_object()
+                    .bucket(&bucket)
+                    .key(&s3_key)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|e| AppError::S3(format!("Upload failed: {}", e)))?;
 
-        Ok(())
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Multipart upload for files > 100MB
@@ -280,17 +364,29 @@ impl TransferService {
                 .await
                 .map_err(|e| AppError::Io(e))?;
 
-            // Upload part
-            let upload_part_response = client
-                .upload_part()
-                .bucket(bucket)
-                .key(s3_key)
-                .upload_id(&upload_id)
-                .part_number(part_number as i32)
-                .body(ByteStream::from(buffer))
-                .send()
-                .await
-                .map_err(|e| AppError::S3(format!("Failed to upload part {}: {}", part_number, e)))?;
+            // Upload part with retry
+            let buffer_clone = buffer.clone();
+            let upload_part_response = self.retry_s3_op(job_id, 3, || {
+                let client = client.clone();
+                let bucket = bucket.to_string();
+                let s3_key = s3_key.to_string();
+                let upload_id = upload_id.clone();
+                let buf = buffer_clone.clone();
+                let pn = part_number;
+                async move {
+                    client
+                        .upload_part()
+                        .bucket(&bucket)
+                        .key(&s3_key)
+                        .upload_id(&upload_id)
+                        .part_number(pn as i32)
+                        .body(ByteStream::from(buf))
+                        .send()
+                        .await
+                        .map_err(|e| AppError::S3(format!("Failed to upload part {}: {}", pn, e)))
+                }
+            })
+            .await?;
 
             let etag = upload_part_response
                 .e_tag()
@@ -369,6 +465,8 @@ impl TransferService {
         if job.status == TransferStatus::Active {
             job.status = TransferStatus::Paused;
         }
+        drop(jobs);
+        self.save_to_disk().await;
 
         Ok(())
     }
@@ -424,6 +522,8 @@ impl TransferService {
             .ok_or_else(|| AppError::NotFound("Transfer job not found".to_string()))?;
 
         job.status = TransferStatus::Cancelled;
+        drop(jobs);
+        self.save_to_disk().await;
 
         Ok(())
     }
@@ -471,6 +571,7 @@ impl TransferService {
         let mut jobs = self.jobs.lock().await;
         jobs.push(job);
         drop(jobs);
+        self.save_to_disk().await;
 
         // Start download in background
         let service = self.clone_for_background();
@@ -548,6 +649,8 @@ impl TransferService {
                 }
             }
         }
+        drop(jobs);
+        self.save_to_disk().await;
 
         result
     }
@@ -574,22 +677,33 @@ impl TransferService {
             }
         }
 
-        let response = client
-            .get_object()
-            .bucket(bucket)
-            .key(s3_key)
-            .send()
-            .await
-            .map_err(|e| AppError::S3(format!("Failed to download object: {}", e)))?;
+        let bucket = bucket.to_string();
+        let s3_key = s3_key.to_string();
+        let local_path = local_path.to_string();
 
-        // Collect body (bounded at 100 MB for simple downloads)
-        let body = response.body.collect().await
-            .map_err(|e| AppError::S3(format!("Failed to read download stream: {}", e)))?;
+        let bytes = self.retry_s3_op(job_id, 3, || {
+            let client = client.clone();
+            let bucket = bucket.clone();
+            let s3_key = s3_key.clone();
+            async move {
+                let response = client
+                    .get_object()
+                    .bucket(&bucket)
+                    .key(&s3_key)
+                    .send()
+                    .await
+                    .map_err(|e| AppError::S3(format!("Failed to download object: {}", e)))?;
 
-        let bytes = body.into_bytes();
+                let body = response.body.collect().await
+                    .map_err(|e| AppError::S3(format!("Failed to read download stream: {}", e)))?;
+
+                Ok(body.into_bytes())
+            }
+        })
+        .await?;
 
         // Write to file
-        tokio::fs::write(local_path, &bytes)
+        tokio::fs::write(&local_path, &bytes)
             .await
             .map_err(|e| AppError::Io(e))?;
 
@@ -679,21 +793,32 @@ impl TransferService {
             let range_end = std::cmp::min(range_start + MULTIPART_CHUNK_SIZE - 1, file_size - 1);
             let range_header = format!("bytes={}-{}", range_start, range_end);
 
-            // Download this chunk using a range request
-            let response = client
-                .get_object()
-                .bucket(bucket)
-                .key(s3_key)
-                .range(&range_header)
-                .send()
-                .await
-                .map_err(|e| AppError::S3(format!("Failed to download chunk {}: {}", chunk_number, e)))?;
+            // Download this chunk using a range request with retry
+            let chunk_bytes = self.retry_s3_op(job_id, 3, || {
+                let client = client.clone();
+                let bucket = bucket.to_string();
+                let s3_key = s3_key.to_string();
+                let range = range_header.clone();
+                let cn = chunk_number;
+                async move {
+                    let response = client
+                        .get_object()
+                        .bucket(&bucket)
+                        .key(&s3_key)
+                        .range(&range)
+                        .send()
+                        .await
+                        .map_err(|e| AppError::S3(format!("Failed to download chunk {}: {}", cn, e)))?;
 
-            // Collect chunk data (bounded at MULTIPART_CHUNK_SIZE = 10 MB)
-            let body = response.body.collect().await
-                .map_err(|e| AppError::S3(format!("Failed to read chunk {} data: {}", chunk_number, e)))?;
+                    let body = response.body.collect().await
+                        .map_err(|e| AppError::S3(format!("Failed to read chunk {} data: {}", cn, e)))?;
 
-            file.write_all(&body.into_bytes()).await.map_err(|e| AppError::Io(e))?;
+                    Ok(body.into_bytes())
+                }
+            })
+            .await?;
+
+            file.write_all(&chunk_bytes).await.map_err(|e| AppError::Io(e))?;
 
             // Update progress after each chunk
             let chunk_end_bytes = (chunk_number * MULTIPART_CHUNK_SIZE).min(file_size);
@@ -707,6 +832,59 @@ impl TransferService {
         Ok(())
     }
 
+    /// Retry an async S3 operation with exponential backoff
+    async fn retry_s3_op<F, Fut, T>(
+        &self,
+        job_id: Uuid,
+        max_retries: u32,
+        mut op: F,
+    ) -> AppResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = AppResult<T>>,
+    {
+        let mut last_err = AppError::S3("Unknown error".to_string());
+
+        for attempt in 0..=max_retries {
+            match op().await {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    last_err = e;
+
+                    if attempt < max_retries {
+                        // Update retry count on the job
+                        let mut jobs = self.jobs.lock().await;
+                        if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
+                            job.retry_count = attempt + 1;
+                            // Check if cancelled/paused
+                            if job.status == TransferStatus::Cancelled
+                                || job.status == TransferStatus::Paused
+                            {
+                                return Err(last_err);
+                            }
+                        }
+                        drop(jobs);
+
+                        let delay = std::cmp::min(
+                            BASE_RETRY_DELAY_MS * 2u64.pow(attempt),
+                            MAX_RETRY_DELAY_MS,
+                        );
+                        tracing::warn!(
+                            "S3 operation failed (attempt {}/{}), retrying in {}ms: {}",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            last_err
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_err)
+    }
+
     /// Set the maximum number of concurrent transfers
     pub async fn set_concurrency_limit(&self, _limit: usize) -> AppResult<()> {
         // TODO: Implement in TransferQueue
@@ -718,6 +896,7 @@ impl TransferService {
         Self {
             jobs: Arc::clone(&self.jobs),
             s3_client_service: S3ClientService::new(),
+            persist_path: self.persist_path.clone(),
         }
     }
 

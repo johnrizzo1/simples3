@@ -16,6 +16,14 @@ pub struct TransferJob {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+fn default_max_retries() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,6 +85,8 @@ impl TransferJob {
             created_at: chrono::Utc::now(),
             started_at: None,
             completed_at: None,
+            retry_count: 0,
+            max_retries: 3,
         }
     }
 
