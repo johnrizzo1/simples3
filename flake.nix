@@ -127,7 +127,11 @@
 
           sourceRoot = "source/src-tauri";
 
-          cargoHash = "sha256-w5th0hQfic8R9Uvs6o8sMz29pr7zgQYOwN02BqhY0zQ=";
+          cargoHash = "sha256-gvROZ4JtGo3kZ4PNP/r1pxs9hooPAMmsNsX2WoMmjpE=";
+
+          # Enable embedded asset serving (the Tauri CLI passes this
+          # automatically during `tauri build`, but we use plain cargo).
+          buildFeatures = [ "custom-protocol" ];
 
           # Place the pre-built frontend where tauri expects it (../dist).
           # The source directory may be read-only after unpack, so ensure

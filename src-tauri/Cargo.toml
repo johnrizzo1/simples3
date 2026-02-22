@@ -48,6 +48,9 @@ tauri-plugin-http = "2.0"
 tauri-plugin-store = "2.0"
 tauri-plugin-dialog = "2.0"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [profile.release]
 opt-level = "z"
 lto = true
