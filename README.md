@@ -30,6 +30,16 @@ Download the latest release for your platform from the [Releases](../../releases
 | Windows  | `.msi`, `.exe` (NSIS) |
 | macOS    | `.dmg` |
 
+### macOS Installation Note
+
+On macOS, you may need to remove the quarantine attribute after installing the application:
+
+```bash
+xattr -c /Applications/SimpleS3.app
+```
+
+This is required because the app is not currently signed with an Apple Developer certificate. After running this command, you should be able to launch SimpleS3 normally.
+
 ## Development Setup
 
 ### Using devenv (NixOS / Nix)
