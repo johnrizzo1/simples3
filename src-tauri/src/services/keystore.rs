@@ -94,21 +94,6 @@ impl KeystoreService {
         .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
     }
 
-    /// Check if credentials exist for an endpoint
-    pub async fn has_credentials(&self, endpoint_id: Uuid) -> AppResult<bool> {
-        let service_name = self.service_name.clone();
-        tokio::task::spawn_blocking(move || {
-            let access_key_entry = Entry::new(&service_name, &format!("{}_access_key", endpoint_id))
-                .map_err(|e| AppError::Keystore(format!("Failed to create keystore entry: {}", e)))?;
-
-            match access_key_entry.get_password() {
-                Ok(_) => Ok(true),
-                Err(_) => Ok(false),
-            }
-        })
-        .await
-        .map_err(|e| AppError::Keystore(format!("Keystore task failed: {}", e)))?
-    }
 }
 
 impl Default for KeystoreService {

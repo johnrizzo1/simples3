@@ -92,13 +92,13 @@ pub async fn validate_endpoint(endpoint_id: String) -> Result<(), String> {
 
     tracing::info!("Calling service.validate_endpoint for UUID: {}", id);
 
-    let result = service.validate_endpoint(id).await.map_err(|e| {
+    service.validate_endpoint(id).await.map_err(|e| {
         tracing::error!("validate_endpoint service call failed: {}", e);
         e.to_string()
     })?;
 
     tracing::info!("validate_endpoint completed successfully");
-    Ok(result)
+    Ok(())
 }
 
 /// Set the active endpoint

@@ -65,14 +65,6 @@ impl FilesystemService {
         })
     }
 
-    /// Get the user's documents directory
-    /// This is more accessible in macOS dev mode without Full Disk Access
-    pub fn get_documents_directory(&self) -> AppResult<PathBuf> {
-        dirs::document_dir().ok_or_else(|| {
-            AppError::NotFound("Could not determine documents directory".to_string())
-        })
-    }
-
     /// Recursively list all files (not directories) under a directory.
     /// Returns absolute paths.
     pub fn list_directory_recursive(&self, root: &PathBuf) -> AppResult<Vec<PathBuf>> {
@@ -209,11 +201,6 @@ impl FilesystemService {
         }
 
         Ok(())
-    }
-
-    /// Get file metadata
-    pub async fn get_metadata(&self, path: PathBuf) -> AppResult<LocalFileItem> {
-        self.extract_file_metadata(path).await
     }
 
     /// Extract file metadata from a path

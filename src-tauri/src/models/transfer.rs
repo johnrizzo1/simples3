@@ -90,16 +90,4 @@ impl TransferJob {
         }
     }
 
-    /// Calculate transfer progress percentage
-    pub fn progress_percentage(&self) -> f64 {
-        if self.file_size == 0 {
-            return 0.0;
-        }
-        (self.progress_bytes as f64 / self.file_size as f64) * 100.0
-    }
-
-    /// Check if transfer should use multipart (>100 MB)
-    pub fn should_use_multipart(&self) -> bool {
-        self.file_size > 100 * 1024 * 1024 // 100 MB
-    }
 }

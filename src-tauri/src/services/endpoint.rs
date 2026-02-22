@@ -239,15 +239,6 @@ impl EndpointService {
         Ok(endpoints.clone())
     }
 
-    /// Get a specific endpoint by ID
-    pub async fn get_endpoint(&self, endpoint_id: Uuid) -> AppResult<S3Endpoint> {
-        let endpoints = self.endpoints.lock().await;
-        endpoints
-            .iter()
-            .find(|e| e.id == endpoint_id)
-            .cloned()
-            .ok_or_else(|| AppError::NotFound("Endpoint not found".to_string()))
-    }
 }
 
 impl Default for EndpointService {

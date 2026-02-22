@@ -2,7 +2,6 @@ use crate::models::{
     CompletedPart, ResumePoint, S3Endpoint, TransferJob, TransferLocation, TransferStatus,
     TransferType,
 };
-use crate::services::S3ClientService;
 use crate::utils::{AppError, AppResult};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
@@ -21,7 +20,6 @@ const BASE_RETRY_DELAY_MS: u64 = 1_000; // 1 second base delay
 /// Service for managing file transfer operations
 pub struct TransferService {
     jobs: Arc<Mutex<Vec<TransferJob>>>,
-    s3_client_service: S3ClientService,
     persist_path: PathBuf,
 }
 
@@ -35,7 +33,6 @@ impl TransferService {
 
         let mut service = Self {
             jobs: Arc::new(Mutex::new(Vec::new())),
-            s3_client_service: S3ClientService::new(),
             persist_path,
         };
 
@@ -146,7 +143,7 @@ impl TransferService {
         let path = PathBuf::from(&local_path);
         let metadata = tokio::fs::metadata(&path)
             .await
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
         let file_size = metadata.len();
 
@@ -306,12 +303,12 @@ impl TransferService {
             .to_string();
 
         // Calculate number of parts
-        let num_parts = (file_size + MULTIPART_CHUNK_SIZE - 1) / MULTIPART_CHUNK_SIZE;
+        let num_parts = file_size.div_ceil(MULTIPART_CHUNK_SIZE);
 
         // Open file
         let mut file = File::open(local_path)
             .await
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
         let mut completed_parts = Vec::new();
 
@@ -362,7 +359,7 @@ impl TransferService {
             let mut buffer = vec![0u8; chunk_size as usize];
             file.read_exact(&mut buffer)
                 .await
-                .map_err(|e| AppError::Io(e))?;
+                .map_err(AppError::Io)?;
 
             // Upload part with retry
             let buffer_clone = buffer.clone();
@@ -617,7 +614,7 @@ impl TransferService {
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|e| AppError::Io(e))?;
+                .map_err(AppError::Io)?;
         }
 
         // Decide download strategy based on file size
@@ -705,12 +702,13 @@ impl TransferService {
         // Write to file
         tokio::fs::write(&local_path, &bytes)
             .await
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
         Ok(())
     }
 
     /// Chunked range-based download for files > 100MB with pause/resume support
+    #[allow(clippy::too_many_arguments)]
     async fn chunked_download(
         &self,
         job_id: Uuid,
@@ -723,7 +721,7 @@ impl TransferService {
     ) -> AppResult<()> {
         let client = self.create_client(endpoint).await?;
 
-        let num_chunks = (file_size + MULTIPART_CHUNK_SIZE - 1) / MULTIPART_CHUNK_SIZE;
+        let num_chunks = file_size.div_ceil(MULTIPART_CHUNK_SIZE);
 
         // Determine starting chunk (for resume)
         let start_chunk = if let Some(ref rp) = resume_point {
@@ -738,13 +736,13 @@ impl TransferService {
                 .write(true)
                 .open(local_path)
                 .await
-                .map_err(|e| AppError::Io(e))?;
+                .map_err(AppError::Io)?;
             // Seek to where we left off
             let offset = (start_chunk - 1) * MULTIPART_CHUNK_SIZE;
-            f.seek(std::io::SeekFrom::Start(offset)).await.map_err(|e| AppError::Io(e))?;
+            f.seek(std::io::SeekFrom::Start(offset)).await.map_err(AppError::Io)?;
             f
         } else {
-            File::create(local_path).await.map_err(|e| AppError::Io(e))?
+            File::create(local_path).await.map_err(AppError::Io)?
         };
 
         // Set initial progress for resumed downloads
@@ -764,7 +762,7 @@ impl TransferService {
                     match job.status {
                         TransferStatus::Paused => {
                             drop(jobs);
-                            file.flush().await.map_err(|e| AppError::Io(e))?;
+                            file.flush().await.map_err(AppError::Io)?;
                             // Save resume point
                             let mut jobs = self.jobs.lock().await;
                             if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
@@ -818,7 +816,7 @@ impl TransferService {
             })
             .await?;
 
-            file.write_all(&chunk_bytes).await.map_err(|e| AppError::Io(e))?;
+            file.write_all(&chunk_bytes).await.map_err(AppError::Io)?;
 
             // Update progress after each chunk
             let chunk_end_bytes = (chunk_number * MULTIPART_CHUNK_SIZE).min(file_size);
@@ -828,7 +826,7 @@ impl TransferService {
             }
         }
 
-        file.flush().await.map_err(|e| AppError::Io(e))?;
+        file.flush().await.map_err(AppError::Io)?;
         Ok(())
     }
 
@@ -885,17 +883,10 @@ impl TransferService {
         Err(last_err)
     }
 
-    /// Set the maximum number of concurrent transfers
-    pub async fn set_concurrency_limit(&self, _limit: usize) -> AppResult<()> {
-        // TODO: Implement in TransferQueue
-        Ok(())
-    }
-
     /// Helper to clone for background tasks
     fn clone_for_background(&self) -> Self {
         Self {
             jobs: Arc::clone(&self.jobs),
-            s3_client_service: S3ClientService::new(),
             persist_path: self.persist_path.clone(),
         }
     }
