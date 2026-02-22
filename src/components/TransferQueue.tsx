@@ -11,11 +11,15 @@ import {
   XCircle,
   Loader2,
   Clock,
+  ChevronDown,
+  ChevronUp,
+  ArrowLeftRight,
 } from "lucide-react";
 
 export function TransferQueue() {
   const [transfers, setTransfers] = useState<TransferJob[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [expanded, setExpanded] = useState(false);
 
   // Load transfers periodically
   useEffect(() => {
@@ -129,131 +133,181 @@ export function TransferQueue() {
     return (job.progress_bytes / job.file_size) * 100;
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
-      </div>
-    );
-  }
+  const formatTime = (iso: string): string => {
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  };
 
-  if (transfers.length === 0) {
-    return (
-      <div className="p-8 text-center text-gray-500">
-        <Upload className="w-12 h-12 mx-auto mb-2 opacity-50" />
-        <p>No transfers yet</p>
-        <p className="text-sm mt-1">
-          Select files to upload or download to get started
-        </p>
-      </div>
-    );
-  }
+  const formatDuration = (startIso: string, endIso: string): string => {
+    const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+    if (ms < 0) return "—";
+    const totalSec = Math.floor(ms / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    if (min < 60) return `${min}m ${sec}s`;
+    const hr = Math.floor(min / 60);
+    const remMin = min % 60;
+    return `${hr}h ${remMin}m ${sec}s`;
+  };
+
+  const formatTimingLine = (job: TransferJob): string | null => {
+    if (job.status === "Queued") {
+      return `Queued ${formatTime(job.created_at)}`;
+    }
+    if (!job.started_at) return null;
+    const started = `Started ${formatTime(job.started_at)}`;
+    if (job.completed_at) {
+      const finished = `Finished ${formatTime(job.completed_at)}`;
+      const duration = formatDuration(job.started_at, job.completed_at);
+      return `${started} · ${finished} · ${duration}`;
+    }
+    // Active or Paused — show elapsed so far
+    return started;
+  };
+
+  // Compute summary counts for the header
+  const activeCount = transfers.filter((t) => t.status === "Active").length;
+  const queuedCount = transfers.filter((t) => t.status === "Queued").length;
+  const completedCount = transfers.filter((t) => t.status === "Completed").length;
+  const failedCount = transfers.filter((t) => t.status === "Failed").length;
+
+  const summaryParts: string[] = [];
+  if (activeCount > 0) summaryParts.push(`${activeCount} active`);
+  if (queuedCount > 0) summaryParts.push(`${queuedCount} queued`);
+  if (completedCount > 0) summaryParts.push(`${completedCount} done`);
+  if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold">
-          Transfers ({transfers.length})
-        </h2>
-      </div>
+    <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 flex flex-col" style={{ maxHeight: expanded ? "40%" : undefined }}>
+      {/* Always-visible header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="px-4 py-2 flex items-center gap-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex-shrink-0 w-full text-left"
+      >
+        <ArrowLeftRight className="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <span className="font-semibold">Transfers</span>
+        {loading ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+        ) : (
+          <span className="text-gray-500">
+            ({transfers.length}{summaryParts.length > 0 ? ` — ${summaryParts.join(", ")}` : ""})
+          </span>
+        )}
+        <div className="flex-1" />
+        {expanded ? (
+          <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />
+        ) : (
+          <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0" />
+        )}
+      </button>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="divide-y divide-gray-200 dark:divide-gray-700">
-          {transfers.map((transfer) => (
-            <div
-              key={transfer.id}
-              className="p-4 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
-              {/* Header */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  {transfer.transfer_type === "Upload" ? (
-                    <Upload className="w-4 h-4 text-gray-500" />
-                  ) : (
-                    <Download className="w-4 h-4 text-gray-500" />
-                  )}
-                  <span className="font-medium">
-                    {formatFileName(transfer)}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {getStatusIcon(transfer.status)}
-                  <span
-                    className={`text-sm ${getStatusColor(transfer.status)}`}
-                  >
-                    {transfer.status}
-                  </span>
-                </div>
-              </div>
-
-              {/* Destination */}
-              <div className="text-sm text-gray-500 mb-2 truncate">
-                {formatDestination(transfer)}
-              </div>
-
-              {/* Progress bar */}
-              {(transfer.status === "Active" || transfer.status === "Paused") && (
-                <div className="mb-2">
-                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                    <div
-                      className="bg-blue-500 h-2 rounded-full transition-all"
-                      style={{ width: `${calculateProgress(transfer)}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>
-                      {formatBytes(transfer.progress_bytes)} /{" "}
-                      {formatBytes(transfer.file_size)}
-                    </span>
-                    <span>{calculateProgress(transfer).toFixed(1)}%</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Error message */}
-              {transfer.status === "Failed" && transfer.error_message && (
-                <div className="text-sm text-red-600 dark:text-red-400 mb-2">
-                  {transfer.error_message}
-                </div>
-              )}
-
-              {/* Action buttons */}
-              <div className="flex gap-2">
-                {transfer.status === "Active" && (
-                  <button
-                    onClick={() => handlePause(transfer.id)}
-                    className="px-3 py-1 text-sm bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 rounded hover:bg-yellow-200 dark:hover:bg-yellow-800 flex items-center gap-1"
-                  >
-                    <Pause className="w-3 h-3" />
-                    Pause
-                  </button>
-                )}
-                {transfer.status === "Paused" && (
-                  <button
-                    onClick={() => handleResume(transfer.id)}
-                    className="px-3 py-1 text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800 flex items-center gap-1"
-                  >
-                    <Play className="w-3 h-3" />
-                    Resume
-                  </button>
-                )}
-                {(transfer.status === "Active" ||
-                  transfer.status === "Paused" ||
-                  transfer.status === "Queued") && (
-                  <button
-                    onClick={() => handleCancel(transfer.id)}
-                    className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-800 flex items-center gap-1"
-                  >
-                    <X className="w-3 h-3" />
-                    Cancel
-                  </button>
-                )}
-              </div>
+      {/* Expandable detail list */}
+      {expanded && (
+        <div className="overflow-y-auto flex-1 border-t border-gray-200 dark:border-gray-700">
+          {transfers.length === 0 ? (
+            <div className="p-4 text-center text-gray-500 text-sm">
+              No transfers yet. Drag files between panes to start.
             </div>
-          ))}
+          ) : (
+            <div className="divide-y divide-gray-200 dark:divide-gray-700">
+              {transfers.map((transfer) => (
+                <div
+                  key={transfer.id}
+                  className="px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  <div className="flex items-center gap-2">
+                    {/* Direction icon */}
+                    {transfer.transfer_type === "Upload" ? (
+                      <Upload className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                    )}
+
+                    {/* File name */}
+                    <span className="text-sm font-medium truncate flex-1 min-w-0">
+                      {formatFileName(transfer)}
+                    </span>
+
+                    {/* Progress bar (inline) */}
+                    {(transfer.status === "Active" || transfer.status === "Paused") && (
+                      <div className="w-24 flex-shrink-0">
+                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                          <div
+                            className="bg-blue-500 h-1.5 rounded-full transition-all"
+                            style={{ width: `${calculateProgress(transfer)}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Status */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {getStatusIcon(transfer.status)}
+                      <span className={`text-xs ${getStatusColor(transfer.status)}`}>
+                        {transfer.status === "Active" || transfer.status === "Paused"
+                          ? `${calculateProgress(transfer).toFixed(0)}%`
+                          : transfer.status}
+                      </span>
+                    </div>
+
+                    {/* Destination */}
+                    <span className="text-xs text-gray-400 truncate max-w-[200px] flex-shrink-0 hidden lg:inline">
+                      {formatDestination(transfer)}
+                    </span>
+
+                    {/* Action buttons */}
+                    <div className="flex gap-1 flex-shrink-0">
+                      {transfer.status === "Active" && transfer.transfer_type === "Download" && (
+                        <button
+                          onClick={() => handlePause(transfer.id)}
+                          className="p-1 rounded hover:bg-yellow-100 dark:hover:bg-yellow-900"
+                          title="Pause"
+                        >
+                          <Pause className="w-3.5 h-3.5 text-yellow-600" />
+                        </button>
+                      )}
+                      {transfer.status === "Paused" && transfer.transfer_type === "Download" && (
+                        <button
+                          onClick={() => handleResume(transfer.id)}
+                          className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900"
+                          title="Resume"
+                        >
+                          <Play className="w-3.5 h-3.5 text-blue-600" />
+                        </button>
+                      )}
+                      {(transfer.status === "Active" ||
+                        transfer.status === "Paused" ||
+                        transfer.status === "Queued") && (
+                        <button
+                          onClick={() => handleCancel(transfer.id)}
+                          className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900"
+                          title="Cancel"
+                        >
+                          <X className="w-3.5 h-3.5 text-red-500" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Timing details */}
+                  {formatTimingLine(transfer) && (
+                    <div className="text-xs text-gray-400 ml-5 mt-1 tabular-nums">
+                      {formatTimingLine(transfer)}
+                    </div>
+                  )}
+
+                  {/* Error message on its own line */}
+                  {transfer.status === "Failed" && transfer.error_message && (
+                    <div className="text-xs text-red-600 dark:text-red-400 ml-5 mt-1 truncate">
+                      {transfer.error_message}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

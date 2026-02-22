@@ -45,7 +45,11 @@ impl S3ClientService {
             .load()
             .await;
 
-        Ok(Client::new(&config))
+        let s3_config = aws_sdk_s3::config::Builder::from(&config)
+            .force_path_style(endpoint.path_style)
+            .build();
+
+        Ok(Client::from_conf(s3_config))
     }
 
     /// Validate S3 endpoint credentials by attempting to list buckets
@@ -109,7 +113,7 @@ impl S3ClientService {
         Ok(buckets)
     }
 
-    /// List objects in a bucket with optional prefix
+    /// List objects in a bucket with optional prefix, using delimiter for folder navigation
     pub async fn list_objects(
         &self,
         endpoint: &S3Endpoint,
@@ -118,9 +122,9 @@ impl S3ClientService {
     ) -> AppResult<Vec<S3Object>> {
         let client = self.create_client(endpoint).await?;
 
-        let mut request = client.list_objects_v2().bucket(&bucket);
+        let mut request = client.list_objects_v2().bucket(&bucket).delimiter("/");
 
-        if let Some(p) = prefix {
+        if let Some(ref p) = prefix {
             request = request.prefix(p);
         }
 
@@ -129,30 +133,128 @@ impl S3ClientService {
             .await
             .map_err(|e| AppError::S3(format!("Failed to list objects: {}", e)))?;
 
-        let objects = response
-            .contents()
-            .iter()
-            .filter_map(|obj| {
-                let key = obj.key()?.to_string();
-                let size = obj.size()? as u64;
-                let last_modified = obj.last_modified()?;
-                let modified = chrono::DateTime::from_timestamp(
-                    last_modified.secs(),
-                    last_modified.subsec_nanos(),
-                )?;
-                Some(S3Object {
+        let mut objects: Vec<S3Object> = Vec::new();
+
+        // Add common prefixes (folders) first
+        for cp in response.common_prefixes() {
+            if let Some(prefix_str) = cp.prefix() {
+                objects.push(S3Object {
                     bucket: bucket.clone(),
-                    key,
-                    size,
-                    modified,
-                    storage_class: obj.storage_class().map(|s| s.as_str().to_string()),
-                    etag: obj.e_tag().map(|e| e.to_string()),
-                    is_prefix: false,
+                    key: prefix_str.to_string(),
+                    size: 0,
+                    modified: chrono::Utc::now(),
+                    storage_class: None,
+                    etag: None,
+                    is_prefix: true,
+                });
+            }
+        }
+
+        // Add objects (files) at this level
+        for obj in response.contents() {
+            let Some(key) = obj.key() else { continue };
+            let key = key.to_string();
+
+            // Skip directory marker objects (keys ending with / that match the current prefix)
+            if key.ends_with('/') {
+                continue;
+            }
+
+            let size = obj.size().unwrap_or(0) as u64;
+            let modified = obj
+                .last_modified()
+                .and_then(|lm| {
+                    chrono::DateTime::from_timestamp(lm.secs(), lm.subsec_nanos())
                 })
-            })
-            .collect();
+                .unwrap_or_else(chrono::Utc::now);
+
+            objects.push(S3Object {
+                bucket: bucket.clone(),
+                key,
+                size,
+                modified,
+                storage_class: obj.storage_class().map(|s| s.as_str().to_string()),
+                etag: obj.e_tag().map(|e| e.to_string()),
+                is_prefix: false,
+            });
+        }
 
         Ok(objects)
+    }
+
+    /// Copy an object within the same bucket
+    pub async fn copy_object(
+        &self,
+        endpoint: &S3Endpoint,
+        bucket: String,
+        source_key: String,
+        dest_key: String,
+    ) -> AppResult<()> {
+        let client = self.create_client(endpoint).await?;
+
+        let copy_source = format!("{}/{}", bucket, source_key);
+
+        client
+            .copy_object()
+            .bucket(&bucket)
+            .copy_source(&copy_source)
+            .key(&dest_key)
+            .send()
+            .await
+            .map_err(|e| AppError::S3(format!("Failed to copy object: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Delete all objects under a prefix (recursive)
+    pub async fn delete_prefix(
+        &self,
+        endpoint: &S3Endpoint,
+        bucket: String,
+        prefix: String,
+    ) -> AppResult<u32> {
+        let client = self.create_client(endpoint).await?;
+
+        // List all objects under this prefix (no delimiter = recursive)
+        let mut deleted_count: u32 = 0;
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut request = client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix);
+
+            if let Some(token) = &continuation_token {
+                request = request.continuation_token(token);
+            }
+
+            let response = request
+                .send()
+                .await
+                .map_err(|e| AppError::S3(format!("Failed to list objects for deletion: {}", e)))?;
+
+            for obj in response.contents() {
+                if let Some(key) = obj.key() {
+                    client
+                        .delete_object()
+                        .bucket(&bucket)
+                        .key(key)
+                        .send()
+                        .await
+                        .map_err(|e| AppError::S3(format!("Failed to delete {}: {}", key, e)))?;
+                    deleted_count += 1;
+                }
+            }
+
+            if response.is_truncated() == Some(true) {
+                continuation_token = response.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(deleted_count)
     }
 
     /// Delete an object from S3

@@ -21,6 +21,7 @@ pub async fn add_endpoint(
     region: String,
     access_key_id: String,
     secret_access_key: String,
+    path_style: Option<bool>,
 ) -> Result<S3Endpoint, String> {
     let service = EndpointService::new().map_err(|e| e.to_string())?;
 
@@ -28,7 +29,8 @@ pub async fn add_endpoint(
     service.load_endpoints().await.map_err(|e| e.to_string())?;
 
     // Create new endpoint
-    let endpoint = S3Endpoint::new(name, url, region);
+    let mut endpoint = S3Endpoint::new(name, url, region);
+    endpoint.path_style = path_style.unwrap_or(true);
 
     service
         .add_endpoint(endpoint, access_key_id, secret_access_key)

@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+fn default_path_style() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3Endpoint {
     pub id: Uuid,
@@ -13,6 +17,8 @@ pub struct S3Endpoint {
     pub secret_access_key: Option<String>, // Stored in keystore, not serialized
     pub validation_status: ValidationStatus,
     pub is_active: bool,
+    #[serde(default = "default_path_style")]
+    pub path_style: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_validated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -36,6 +42,7 @@ impl S3Endpoint {
             secret_access_key: None,
             validation_status: ValidationStatus::Pending,
             is_active: false,
+            path_style: true,
             created_at: chrono::Utc::now(),
             last_validated_at: None,
         }

@@ -4,13 +4,14 @@ import { Folder, File } from "lucide-react";
 interface FileItemProps {
   item: LocalFileItem;
   selected: boolean;
-  onSelect: (item: LocalFileItem) => void;
+  onSelect: (item: LocalFileItem, shiftKey: boolean) => void;
   onDoubleClick: (item: LocalFileItem) => void;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-export function FileItem({ item, selected, onSelect, onDoubleClick, draggable = false, onDragStart }: FileItemProps) {
+export function FileItem({ item, selected, onSelect, onDoubleClick, draggable = false, onDragStart, onContextMenu }: FileItemProps) {
   const formatSize = (bytes: number): string => {
     if (bytes === 0) return "-";
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -25,12 +26,14 @@ export function FileItem({ item, selected, onSelect, onDoubleClick, draggable = 
 
   return (
     <div
-      className={`flex items-center gap-3 p-2 rounded ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:bg-gray-100 dark:hover:bg-gray-800 ${
+      className={`flex items-center gap-3 p-2 rounded select-none ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:bg-gray-100 dark:hover:bg-gray-800 ${
         selected ? "bg-blue-100 dark:bg-blue-900" : ""
       }`}
       draggable={draggable}
       onDragStart={onDragStart}
-      onClick={() => onSelect(item)}
+      onContextMenu={onContextMenu}
+      onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+      onClick={(e) => onSelect(item, e.shiftKey)}
       onDoubleClick={() => onDoubleClick(item)}
     >
       <div className="flex-shrink-0">

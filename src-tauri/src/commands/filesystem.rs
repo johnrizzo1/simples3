@@ -52,3 +52,26 @@ pub async fn delete_local_item(path: String) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Create a new directory
+#[tauri::command]
+pub fn create_directory(path: String) -> Result<(), String> {
+    let service = FilesystemService::new();
+    let path_buf = PathBuf::from(path);
+
+    service
+        .create_directory(path_buf)
+        .map_err(|e| e.to_string())
+}
+
+/// Copy local files/directories to a destination directory
+#[tauri::command]
+pub fn copy_local_items(sources: Vec<String>, dest_dir: String) -> Result<(), String> {
+    let service = FilesystemService::new();
+    let source_paths: Vec<PathBuf> = sources.into_iter().map(PathBuf::from).collect();
+    let dest_path = PathBuf::from(dest_dir);
+
+    service
+        .copy_items(source_paths, dest_path)
+        .map_err(|e| e.to_string())
+}

@@ -39,6 +39,7 @@ export interface S3Endpoint {
   region: string;
   validation_status: ValidationStatus | { Failed: { reason: string } };
   is_active: boolean;
+  path_style: boolean;
   created_at: string; // ISO 8601 datetime
   last_validated_at: string | null; // ISO 8601 datetime
 }

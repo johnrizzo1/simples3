@@ -19,6 +19,7 @@ export function EndpointManager() {
     region: "",
     access_key_id: "",
     secret_access_key: "",
+    path_style: true,
   });
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export function EndpointManager() {
         region: formData.region,
         accessKeyId: formData.access_key_id,
         secretAccessKey: formData.secret_access_key,
+        pathStyle: formData.path_style,
       });
 
       // Reset form
@@ -59,6 +61,7 @@ export function EndpointManager() {
         region: "",
         access_key_id: "",
         secret_access_key: "",
+        path_style: true,
       });
       setShowAddForm(false);
 
@@ -88,6 +91,7 @@ export function EndpointManager() {
           name: formData.name,
           url: formData.url,
           region: formData.region,
+          path_style: formData.path_style,
         },
         accessKeyId,
         secretAccessKey,
@@ -100,6 +104,7 @@ export function EndpointManager() {
         region: "",
         access_key_id: "",
         secret_access_key: "",
+        path_style: true,
       });
 
       await loadEndpoints();
@@ -164,6 +169,7 @@ export function EndpointManager() {
       region: endpoint.region,
       access_key_id: "",
       secret_access_key: "",
+      path_style: endpoint.path_style ?? true,
     });
     setShowAddForm(false);
   };
@@ -176,6 +182,7 @@ export function EndpointManager() {
       region: "",
       access_key_id: "",
       secret_access_key: "",
+      path_style: true,
     });
   };
 
@@ -294,6 +301,21 @@ export function EndpointManager() {
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700"
                   required={!editingEndpoint}
                 />
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.path_style}
+                    onChange={(e) => setFormData({ ...formData, path_style: e.target.checked })}
+                    className="rounded border-gray-300 dark:border-gray-600"
+                  />
+                  <span className="font-medium">Path-style addressing</span>
+                </label>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-6">
+                  Enable for MinIO, Ceph, and other S3-compatible services. Disable for AWS S3.
+                </p>
               </div>
 
               <div className="flex gap-2">

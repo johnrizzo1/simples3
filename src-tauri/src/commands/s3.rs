@@ -101,6 +101,76 @@ pub async fn list_objects(
         .map_err(|e| e.to_string())
 }
 
+/// Copy an S3 object within the same bucket
+#[tauri::command]
+pub async fn copy_s3_object(
+    bucket: String,
+    source_key: String,
+    dest_key: String,
+) -> Result<(), String> {
+    // Get active endpoint
+    let endpoint_service = EndpointService::new().map_err(|e| e.to_string())?;
+    endpoint_service.load_endpoints().await.map_err(|e| e.to_string())?;
+
+    let endpoints = endpoint_service.list_endpoints().await.map_err(|e| e.to_string())?;
+    let active_endpoint = endpoints
+        .iter()
+        .find(|e| e.is_active)
+        .ok_or_else(|| "No active endpoint configured".to_string())?;
+
+    // Load credentials
+    let keystore = KeystoreService::new();
+    let (access_key, secret_key) = keystore
+        .retrieve_credentials(active_endpoint.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Create endpoint with credentials
+    let mut endpoint_with_creds = active_endpoint.clone();
+    endpoint_with_creds.access_key_id = Some(access_key);
+    endpoint_with_creds.secret_access_key = Some(secret_key);
+
+    // Copy object
+    let s3_client = S3ClientService::new();
+    s3_client
+        .copy_object(&endpoint_with_creds, bucket, source_key, dest_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete all objects under an S3 prefix (folder)
+#[tauri::command]
+pub async fn delete_s3_prefix(bucket: String, prefix: String) -> Result<u32, String> {
+    // Get active endpoint
+    let endpoint_service = EndpointService::new().map_err(|e| e.to_string())?;
+    endpoint_service.load_endpoints().await.map_err(|e| e.to_string())?;
+
+    let endpoints = endpoint_service.list_endpoints().await.map_err(|e| e.to_string())?;
+    let active_endpoint = endpoints
+        .iter()
+        .find(|e| e.is_active)
+        .ok_or_else(|| "No active endpoint configured".to_string())?;
+
+    // Load credentials
+    let keystore = KeystoreService::new();
+    let (access_key, secret_key) = keystore
+        .retrieve_credentials(active_endpoint.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Create endpoint with credentials
+    let mut endpoint_with_creds = active_endpoint.clone();
+    endpoint_with_creds.access_key_id = Some(access_key);
+    endpoint_with_creds.secret_access_key = Some(secret_key);
+
+    // Delete prefix
+    let s3_client = S3ClientService::new();
+    s3_client
+        .delete_prefix(&endpoint_with_creds, bucket, prefix)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Delete an S3 object
 #[tauri::command]
 pub async fn delete_s3_object(bucket: String, key: String) -> Result<(), String> {

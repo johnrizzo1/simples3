@@ -23,13 +23,15 @@
   languages.javascript.bun.enable = true;
   languages.typescript.enable = true;
 
-  # Work around Wayland protocol errors with WebKitGTK on NixOS.
-  # Falls back to X11 (via XWayland) which is stable.
-  env.GDK_BACKEND = "x11";
+  env = { } // lib.optionals pkgs.stdenv.isLinux {
+    # Work around Wayland protocol errors with WebKitGTK on NixOS.
+    # Falls back to X11 (via XWayland) which is stable.
+    GDK_BACKEND = "x11";
 
-  # Disable WebKitGTK DMA-BUF renderer to fix blank white page
-  # caused by "Failed to create GBM buffer" on NixOS.
-  env.WEBKIT_DISABLE_DMABUF_RENDERER = "1";
+    # Disable WebKitGTK DMA-BUF renderer to fix blank white page
+    # caused by "Failed to create GBM buffer" on NixOS.
+    WEBKIT_DISABLE_DMABUF_RENDERER = "1";
+  };
 
   # https://devenv.sh/scripts/
 

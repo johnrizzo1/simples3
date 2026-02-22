@@ -73,6 +73,108 @@ impl FilesystemService {
         })
     }
 
+    /// Recursively list all files (not directories) under a directory.
+    /// Returns absolute paths.
+    pub fn list_directory_recursive(&self, root: &PathBuf) -> AppResult<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        self.walk_directory(root, &mut files)?;
+        Ok(files)
+    }
+
+    fn walk_directory(&self, dir: &PathBuf, files: &mut Vec<PathBuf>) -> AppResult<()> {
+        let entries = fs::read_dir(dir).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                AppError::PermissionDenied(format!(
+                    "Permission denied accessing directory: {}",
+                    dir.display()
+                ))
+            } else {
+                AppError::Io(e)
+            }
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(AppError::Io)?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path).map_err(AppError::Io)?;
+
+            if meta.is_dir() {
+                self.walk_directory(&path, files)?;
+            } else if meta.is_file() {
+                files.push(path);
+            }
+            // Skip symlinks and other special files
+        }
+
+        Ok(())
+    }
+
+    /// Create a new directory
+    pub fn create_directory(&self, path: PathBuf) -> AppResult<()> {
+        if path.exists() {
+            return Err(AppError::Validation(format!(
+                "Path already exists: {}",
+                path.display()
+            )));
+        }
+
+        fs::create_dir(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                AppError::PermissionDenied(format!(
+                    "Permission denied creating directory: {}",
+                    path.display()
+                ))
+            } else {
+                AppError::Io(e)
+            }
+        })?;
+
+        Ok(())
+    }
+
+    /// Copy files/directories to a destination directory
+    pub fn copy_items(&self, sources: Vec<PathBuf>, dest_dir: PathBuf) -> AppResult<()> {
+        if !dest_dir.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Destination is not a directory: {}",
+                dest_dir.display()
+            )));
+        }
+
+        for src in sources {
+            let file_name = src
+                .file_name()
+                .ok_or_else(|| AppError::Validation("Invalid source path".to_string()))?;
+            let target = dest_dir.join(file_name);
+
+            if src.is_dir() {
+                self.copy_dir_recursive(&src, &target)?;
+            } else {
+                fs::copy(&src, &target).map_err(AppError::Io)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn copy_dir_recursive(&self, src: &PathBuf, dest: &PathBuf) -> AppResult<()> {
+        fs::create_dir_all(dest).map_err(AppError::Io)?;
+
+        for entry in fs::read_dir(src).map_err(AppError::Io)? {
+            let entry = entry.map_err(AppError::Io)?;
+            let entry_path = entry.path();
+            let target = dest.join(entry.file_name());
+
+            if entry_path.is_dir() {
+                self.copy_dir_recursive(&entry_path, &target)?;
+            } else {
+                fs::copy(&entry_path, &target).map_err(AppError::Io)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Delete a local file or directory
     pub async fn delete_item(&self, path: PathBuf) -> AppResult<()> {
         if !path.exists() {

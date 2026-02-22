@@ -9,7 +9,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -56,7 +56,11 @@ impl TransferService {
             .load()
             .await;
 
-        Ok(Client::new(&config))
+        let s3_config = aws_sdk_s3::config::Builder::from(&config)
+            .force_path_style(endpoint.path_style)
+            .build();
+
+        Ok(Client::from_conf(s3_config))
     }
 
     /// Queue a new upload transfer
@@ -143,13 +147,18 @@ impl TransferService {
         if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
             match &result {
                 Ok(_) => {
-                    job.status = TransferStatus::Completed;
-                    job.completed_at = Some(chrono::Utc::now());
-                    job.progress_bytes = file_size;
+                    // Only mark completed if not paused
+                    if job.status != TransferStatus::Paused {
+                        job.status = TransferStatus::Completed;
+                        job.completed_at = Some(chrono::Utc::now());
+                        job.progress_bytes = file_size;
+                    }
                 }
                 Err(e) => {
-                    job.status = TransferStatus::Failed;
-                    job.error_message = Some(e.to_string());
+                    if job.status != TransferStatus::Cancelled {
+                        job.status = TransferStatus::Failed;
+                        job.error_message = Some(e.to_string());
+                    }
                 }
             }
         }
@@ -365,7 +374,7 @@ impl TransferService {
     }
 
     /// Resume a paused transfer
-    pub async fn resume_transfer(&self, job_id: Uuid) -> AppResult<()> {
+    pub async fn resume_transfer(&self, job_id: Uuid, endpoint: &S3Endpoint) -> AppResult<()> {
         let jobs = self.jobs.lock().await;
         let job = jobs
             .iter()
@@ -376,19 +385,32 @@ impl TransferService {
             return Err(AppError::Transfer("Transfer is not paused".to_string()));
         }
 
+        let transfer_type = job.transfer_type.clone();
+
         drop(jobs);
 
-        // Update status
+        // Update status to active
         let mut jobs = self.jobs.lock().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
             job.status = TransferStatus::Active;
         }
         drop(jobs);
 
-        // Resume in background
-        // (Resuming from resume point would require more complex state management)
-        // For now, we'll restart the transfer
-        // TODO: Implement proper resume from parts_completed
+        // Re-spawn the transfer in background
+        let service = self.clone_for_background();
+        let endpoint_clone = endpoint.clone();
+        match transfer_type {
+            TransferType::Upload => {
+                tokio::spawn(async move {
+                    let _ = service.execute_upload(job_id, &endpoint_clone).await;
+                });
+            }
+            TransferType::Download => {
+                tokio::spawn(async move {
+                    let _ = service.execute_download(job_id, &endpoint_clone).await;
+                });
+            }
+        }
 
         Ok(())
     }
@@ -462,7 +484,7 @@ impl TransferService {
 
     /// Execute a download transfer
     async fn execute_download(&self, job_id: Uuid, endpoint: &S3Endpoint) -> AppResult<()> {
-        // Get job
+        // Get job info
         let mut jobs = self.jobs.lock().await;
         let job = jobs
             .iter_mut()
@@ -484,34 +506,204 @@ impl TransferService {
             }
         };
 
+        // Check for resume point
+        let resume_point = job.resume_point.clone();
+
         drop(jobs);
 
-        // Download the object
+        // Ensure parent directories exist
+        let dest = PathBuf::from(&local_path);
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| AppError::Io(e))?;
+        }
+
+        // Decide download strategy based on file size
+        let result = if file_size > MULTIPART_THRESHOLD {
+            self.chunked_download(job_id, endpoint, &bucket, &s3_key, &local_path, file_size, resume_point)
+                .await
+        } else {
+            self.simple_download(job_id, endpoint, &bucket, &s3_key, &local_path, file_size)
+                .await
+        };
+
+        // Update job status based on result
+        let mut jobs = self.jobs.lock().await;
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
+            match &result {
+                Ok(_) => {
+                    // Only mark completed if not paused
+                    if job.status != TransferStatus::Paused {
+                        job.status = TransferStatus::Completed;
+                        job.completed_at = Some(chrono::Utc::now());
+                        job.progress_bytes = file_size;
+                    }
+                }
+                Err(e) => {
+                    if job.status != TransferStatus::Cancelled {
+                        job.status = TransferStatus::Failed;
+                        job.error_message = Some(e.to_string());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Simple download for files <= 100MB
+    async fn simple_download(
+        &self,
+        job_id: Uuid,
+        endpoint: &S3Endpoint,
+        bucket: &str,
+        s3_key: &str,
+        local_path: &str,
+        _file_size: u64,
+    ) -> AppResult<()> {
         let client = self.create_client(endpoint).await?;
-        let result = client
+
+        // Check for cancel before starting
+        {
+            let jobs = self.jobs.lock().await;
+            if let Some(job) = jobs.iter().find(|j| j.id == job_id) {
+                if job.status == TransferStatus::Cancelled {
+                    return Err(AppError::Transfer("Transfer cancelled".to_string()));
+                }
+            }
+        }
+
+        let response = client
             .get_object()
-            .bucket(&bucket)
-            .key(&s3_key)
+            .bucket(bucket)
+            .key(s3_key)
             .send()
             .await
             .map_err(|e| AppError::S3(format!("Failed to download object: {}", e)))?;
 
-        // Write to file
-        let body = result.body.collect().await
+        // Collect body (bounded at 100 MB for simple downloads)
+        let body = response.body.collect().await
             .map_err(|e| AppError::S3(format!("Failed to read download stream: {}", e)))?;
 
-        tokio::fs::write(&local_path, body.into_bytes())
+        let bytes = body.into_bytes();
+
+        // Write to file
+        tokio::fs::write(local_path, &bytes)
             .await
             .map_err(|e| AppError::Io(e))?;
 
-        // Update job status
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
-            job.status = TransferStatus::Completed;
-            job.completed_at = Some(chrono::Utc::now());
-            job.progress_bytes = file_size;
+        Ok(())
+    }
+
+    /// Chunked range-based download for files > 100MB with pause/resume support
+    async fn chunked_download(
+        &self,
+        job_id: Uuid,
+        endpoint: &S3Endpoint,
+        bucket: &str,
+        s3_key: &str,
+        local_path: &str,
+        file_size: u64,
+        resume_point: Option<ResumePoint>,
+    ) -> AppResult<()> {
+        let client = self.create_client(endpoint).await?;
+
+        let num_chunks = (file_size + MULTIPART_CHUNK_SIZE - 1) / MULTIPART_CHUNK_SIZE;
+
+        // Determine starting chunk (for resume)
+        let start_chunk = if let Some(ref rp) = resume_point {
+            rp.next_part_number as u64
+        } else {
+            1
+        };
+
+        // Open file: create new or open existing for resume
+        let mut file = if start_chunk > 1 {
+            let mut f = tokio::fs::OpenOptions::new()
+                .write(true)
+                .open(local_path)
+                .await
+                .map_err(|e| AppError::Io(e))?;
+            // Seek to where we left off
+            let offset = (start_chunk - 1) * MULTIPART_CHUNK_SIZE;
+            f.seek(std::io::SeekFrom::Start(offset)).await.map_err(|e| AppError::Io(e))?;
+            f
+        } else {
+            File::create(local_path).await.map_err(|e| AppError::Io(e))?
+        };
+
+        // Set initial progress for resumed downloads
+        if start_chunk > 1 {
+            let already_downloaded = (start_chunk - 1) * MULTIPART_CHUNK_SIZE;
+            let mut jobs = self.jobs.lock().await;
+            if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
+                job.progress_bytes = already_downloaded.min(file_size);
+            }
         }
 
+        for chunk_number in start_chunk..=num_chunks {
+            // Check if transfer is paused or cancelled
+            {
+                let jobs = self.jobs.lock().await;
+                if let Some(job) = jobs.iter().find(|j| j.id == job_id) {
+                    match job.status {
+                        TransferStatus::Paused => {
+                            drop(jobs);
+                            file.flush().await.map_err(|e| AppError::Io(e))?;
+                            // Save resume point
+                            let mut jobs = self.jobs.lock().await;
+                            if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
+                                job.resume_point = Some(ResumePoint {
+                                    upload_id: None,
+                                    parts_completed: Vec::new(),
+                                    next_part_number: chunk_number as i32,
+                                    chunk_size: MULTIPART_CHUNK_SIZE,
+                                });
+                            }
+                            return Ok(());
+                        }
+                        TransferStatus::Cancelled => {
+                            drop(jobs);
+                            drop(file);
+                            tokio::fs::remove_file(local_path).await.ok();
+                            return Err(AppError::Transfer("Transfer cancelled".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Calculate byte range for this chunk
+            let range_start = (chunk_number - 1) * MULTIPART_CHUNK_SIZE;
+            let range_end = std::cmp::min(range_start + MULTIPART_CHUNK_SIZE - 1, file_size - 1);
+            let range_header = format!("bytes={}-{}", range_start, range_end);
+
+            // Download this chunk using a range request
+            let response = client
+                .get_object()
+                .bucket(bucket)
+                .key(s3_key)
+                .range(&range_header)
+                .send()
+                .await
+                .map_err(|e| AppError::S3(format!("Failed to download chunk {}: {}", chunk_number, e)))?;
+
+            // Collect chunk data (bounded at MULTIPART_CHUNK_SIZE = 10 MB)
+            let body = response.body.collect().await
+                .map_err(|e| AppError::S3(format!("Failed to read chunk {} data: {}", chunk_number, e)))?;
+
+            file.write_all(&body.into_bytes()).await.map_err(|e| AppError::Io(e))?;
+
+            // Update progress after each chunk
+            let chunk_end_bytes = (chunk_number * MULTIPART_CHUNK_SIZE).min(file_size);
+            let mut jobs = self.jobs.lock().await;
+            if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
+                job.progress_bytes = chunk_end_bytes;
+            }
+        }
+
+        file.flush().await.map_err(|e| AppError::Io(e))?;
         Ok(())
     }
 

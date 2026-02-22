@@ -1,7 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import { S3Bucket, S3Object } from "../types/models";
 import { FileItem } from "./FileItem";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
+import { InputDialog } from "./InputDialog";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { useClipboard } from "../contexts/ClipboardContext";
 import {
   Home,
   ArrowUp,
@@ -11,6 +16,9 @@ import {
   Loader2,
   Download,
   Trash2,
+  FolderPlus,
+  Copy,
+  Clipboard,
 } from "lucide-react";
 
 type ViewMode = "buckets" | "objects";
@@ -26,10 +34,78 @@ export function S3Pane() {
   const [objects, setObjects] = useState<S3Object[]>([]);
   const [currentBucket, setCurrentBucket] = useState<string>("");
   const [currentPrefix, setCurrentPrefix] = useState<string>("");
-  const [selectedItem, setSelectedItem] = useState<S3Bucket | S3Object | null>(null);
+  const [selectedBucket, setSelectedBucket] = useState<S3Bucket | null>(null);
+  const [selectedObjects, setSelectedObjects] = useState<S3Object[]>([]);
+  const [anchorObject, setAnchorObject] = useState<S3Object | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null);
+  const [inputDialog, setInputDialog] = useState<{ title: string; label: string; defaultValue?: string; onConfirm: (value: string) => void } | null>(null);
+  const { clipboard, setClipboard } = useClipboard();
+
+  // Promise-based input dialog helper
+  const inputResolveRef = useRef<((value: string | null) => void) | null>(null);
+
+  const showInput = useCallback((title: string, label: string, defaultValue?: string): Promise<string | null> => {
+    return new Promise((resolve) => {
+      inputResolveRef.current = resolve;
+      setInputDialog({
+        title,
+        label,
+        defaultValue,
+        onConfirm: (value) => {
+          setInputDialog(null);
+          inputResolveRef.current = null;
+          resolve(value);
+        },
+      });
+    });
+  }, []);
+
+  const cancelInput = useCallback(() => {
+    setInputDialog(null);
+    if (inputResolveRef.current) {
+      inputResolveRef.current(null);
+      inputResolveRef.current = null;
+    }
+  }, []);
+
+  // Promise-based confirm dialog helper
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const confirmResolveRef = useRef<((value: boolean) => void) | null>(null);
+
+  const showConfirm = useCallback((title: string, msg: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmResolveRef.current = resolve;
+      setConfirmDialog({
+        title,
+        message: msg,
+        onConfirm: () => {
+          setConfirmDialog(null);
+          confirmResolveRef.current = null;
+          resolve(true);
+        },
+      });
+    });
+  }, []);
+
+  const cancelConfirm = useCallback(() => {
+    setConfirmDialog(null);
+    if (confirmResolveRef.current) {
+      confirmResolveRef.current(false);
+      confirmResolveRef.current = null;
+    }
+  }, []);
+
+  // Resolve ~ in paths to the actual home directory
+  const resolvePath = async (path: string): Promise<string> => {
+    if (path.startsWith("~/") || path === "~") {
+      const home = await invoke<string>("get_home_directory");
+      return path.replace("~", home);
+    }
+    return path;
+  };
 
   // Load buckets on mount
   useEffect(() => {
@@ -48,55 +124,62 @@ export function S3Pane() {
           loadObjects(currentBucket, currentPrefix);
         }
       }
-      // Delete - Delete selected item (only in objects view)
-      if (e.key === "Delete" && selectedItem && viewMode === "objects" && !("name" in selectedItem)) {
+      // Delete - Delete selected objects
+      if (e.key === "Delete" && viewMode === "objects" && selectedObjects.length > 0) {
         e.preventDefault();
-        const s3Object = selectedItem as S3Object;
-        const itemType = s3Object.is_prefix ? "folder" : "file";
-        const confirmed = confirm(
-          `Are you sure you want to delete this ${itemType}?\n${s3Object.key}\n\nThis action cannot be undone.`
-        );
-        if (confirmed) {
-          invoke("delete_s3_object", {
-            bucket: s3Object.bucket,
-            key: s3Object.key,
-          })
-            .then(() => {
-              alert("Object deleted successfully");
-              loadObjects(currentBucket, currentPrefix);
-              setSelectedItem(null);
-            })
-            .catch((err) => alert(`Delete failed: ${err}`));
-        }
+        const objectsToDelete = [...selectedObjects];
+        const count = objectsToDelete.length;
+        const names = objectsToDelete.slice(0, 5).map((o) => o.key).join("\n");
+        const suffix = count > 5 ? `\n...and ${count - 5} more` : "";
+        showConfirm("Confirm Delete", `Delete ${count} item(s)?\n${names}${suffix}`).then(async (confirmed) => {
+          if (!confirmed) return;
+          const results = await Promise.allSettled(
+            objectsToDelete.map((obj) =>
+              obj.is_prefix
+                ? invoke("delete_s3_prefix", { bucket: obj.bucket, prefix: obj.key })
+                : invoke("delete_s3_object", { bucket: obj.bucket, key: obj.key })
+            )
+          );
+          const failures = results.filter((r) => r.status === "rejected");
+          if (failures.length > 0) {
+            await message(`${failures.length} of ${count} deletion(s) failed.`, { title: "Error", kind: "error" });
+          }
+          loadObjects(currentBucket, currentPrefix);
+          setSelectedObjects([]);
+          setAnchorObject(null);
+        });
       }
-      // Ctrl/Cmd + D - Download
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        e.key === "d" &&
-        selectedItem &&
-        viewMode === "objects" &&
-        !("name" in selectedItem) &&
-        !(selectedItem as S3Object).is_prefix
-      ) {
+      // Ctrl/Cmd + D - Download selected objects
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && viewMode === "objects" && selectedObjects.length > 0) {
         e.preventDefault();
-        const s3Object = selectedItem as S3Object;
-        const fileName = s3Object.key.split("/").pop() || "download";
-        const localPath = prompt("Enter local path to save the file:", `~/Downloads/${fileName}`);
-        if (localPath) {
-          invoke<string>("download_file", {
-            bucket: s3Object.bucket,
-            s3Key: s3Object.key,
-            localPath,
-          })
-            .then((jobId) => alert(`Download queued! Job ID: ${jobId}\nCheck the Transfers tab to monitor progress.`))
-            .catch((err) => alert(`Download failed: ${err}`));
-        }
+        const downloadable = selectedObjects.filter((o) => !o.is_prefix);
+        if (downloadable.length === 0) return;
+        (async () => {
+          const localDirInput = await showInput("Download from S3", "Local directory:", "~/Downloads");
+          if (!localDirInput) return;
+          const localDir = await resolvePath(localDirInput);
+          Promise.allSettled(
+            downloadable.map((obj) => {
+              const fileName = obj.key.split("/").pop() || "download";
+              return invoke<string>("download_file", {
+                bucket: obj.bucket,
+                s3Key: obj.key,
+                localPath: `${localDir}/${fileName}`,
+              });
+            })
+          ).then(async (results) => {
+            const failures = results.filter((r) => r.status === "rejected");
+            if (failures.length > 0) {
+              await message(`${failures.length} of ${downloadable.length} download(s) failed to queue.`, { title: "Error", kind: "error" });
+            }
+          });
+        })();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [viewMode, selectedItem, currentBucket, currentPrefix]);
+  }, [viewMode, selectedObjects, selectedBucket, currentBucket, currentPrefix]);
 
   const loadBuckets = async () => {
     setLoading(true);
@@ -124,6 +207,8 @@ export function S3Pane() {
       setCurrentBucket(bucket);
       setCurrentPrefix(prefix);
       setViewMode("objects");
+      setSelectedObjects([]);
+      setAnchorObject(null);
     } catch (err) {
       setError(err as string);
     } finally {
@@ -132,19 +217,30 @@ export function S3Pane() {
   };
 
   const handleBucketClick = (bucket: S3Bucket) => {
-    setSelectedItem(bucket);
+    setSelectedBucket(bucket);
   };
 
   const handleBucketDoubleClick = (bucket: S3Bucket) => {
     loadObjects(bucket.name);
   };
 
-  const handleObjectClick = (object: S3Object) => {
-    setSelectedItem(object);
+  const handleObjectClick = (object: S3Object, shiftKey: boolean) => {
+    if (shiftKey && anchorObject) {
+      const anchorIndex = objects.findIndex((o) => o.key === anchorObject.key);
+      const clickedIndex = objects.findIndex((o) => o.key === object.key);
+
+      if (anchorIndex !== -1 && clickedIndex !== -1) {
+        const start = Math.min(anchorIndex, clickedIndex);
+        const end = Math.max(anchorIndex, clickedIndex);
+        setSelectedObjects(objects.slice(start, end + 1));
+      }
+    } else {
+      setSelectedObjects([object]);
+      setAnchorObject(object);
+    }
   };
 
   const handleObjectDoubleClick = (object: S3Object) => {
-    // If it's a prefix (folder), navigate into it
     if (object.is_prefix) {
       loadObjects(currentBucket, object.key);
     }
@@ -154,13 +250,14 @@ export function S3Pane() {
     setViewMode("buckets");
     setCurrentBucket("");
     setCurrentPrefix("");
-    setSelectedItem(null);
+    setSelectedObjects([]);
+    setAnchorObject(null);
+    setSelectedBucket(null);
   };
 
   const handleParentFolder = () => {
-    // Remove the last segment from the prefix
     const parts = currentPrefix.split("/").filter((p) => p);
-    parts.pop(); // Remove last part
+    parts.pop();
     const newPrefix = parts.length > 0 ? parts.join("/") + "/" : "";
     loadObjects(currentBucket, newPrefix);
   };
@@ -174,86 +271,97 @@ export function S3Pane() {
   };
 
   const handleDownload = async () => {
-    if (!selectedItem || viewMode === "buckets" || "name" in selectedItem) {
-      alert("Please select a file to download");
+    const downloadable = selectedObjects.filter((o) => !o.is_prefix);
+    if (downloadable.length === 0) {
+      await message("Please select one or more files to download", { title: "No Files Selected" });
       return;
     }
 
-    const s3Object = selectedItem as S3Object;
-    if (s3Object.is_prefix) {
-      alert("Cannot download folders. Please select a file.");
-      return;
-    }
-
-    // Prompt for local download path
-    const fileName = s3Object.key.split("/").pop() || "download";
-    const localPath = prompt("Enter local path to save the file:", `~/Downloads/${fileName}`);
-    if (!localPath) return;
-
-    try {
-      const jobId = await invoke<string>("download_file", {
-        bucket: s3Object.bucket,
-        s3Key: s3Object.key,
-        localPath,
-      });
-      alert(`Download queued! Job ID: ${jobId}\nCheck the Transfers tab to monitor progress.`);
-    } catch (err) {
-      alert(`Download failed: ${err}`);
+    if (downloadable.length === 1) {
+      const obj = downloadable[0];
+      const fileName = obj.key.split("/").pop() || "download";
+      const localPathInput = await showInput("Download from S3", "Local path:", `~/Downloads/${fileName}`);
+      if (!localPathInput) return;
+      const localPath = await resolvePath(localPathInput);
+      try {
+        await invoke<string>("download_file", {
+          bucket: obj.bucket,
+          s3Key: obj.key,
+          localPath,
+        });
+      } catch (err) {
+        await message(`Download failed: ${err}`, { title: "Error", kind: "error" });
+      }
+    } else {
+      const localDirInput = await showInput("Download from S3", "Local directory:", "~/Downloads");
+      if (!localDirInput) return;
+      const localDir = await resolvePath(localDirInput);
+      const results = await Promise.allSettled(
+        downloadable.map((obj) => {
+          const fileName = obj.key.split("/").pop() || "download";
+          return invoke<string>("download_file", {
+            bucket: obj.bucket,
+            s3Key: obj.key,
+            localPath: `${localDir}/${fileName}`,
+          });
+        })
+      );
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0) {
+        await message(`${failures.length} of ${downloadable.length} download(s) failed to queue.`, { title: "Error", kind: "error" });
+      }
     }
   };
 
   const handleDelete = async () => {
-    if (!selectedItem || viewMode === "buckets" || "name" in selectedItem) {
-      alert("Please select a file or folder to delete");
+    if (selectedObjects.length === 0) {
+      await message("Please select one or more items to delete", { title: "No Items Selected" });
       return;
     }
 
-    const s3Object = selectedItem as S3Object;
-    const itemType = s3Object.is_prefix ? "folder" : "file";
-    const confirmed = confirm(
-      `Are you sure you want to delete this ${itemType}?\n${s3Object.key}\n\nThis action cannot be undone.`
-    );
+    const count = selectedObjects.length;
+    const names = selectedObjects.slice(0, 5).map((o) => o.key).join("\n");
+    const suffix = count > 5 ? `\n...and ${count - 5} more` : "";
+    const confirmed = await showConfirm("Confirm Delete", `Delete ${count} item(s)?\n${names}${suffix}`);
     if (!confirmed) return;
 
-    try {
-      await invoke("delete_s3_object", {
-        bucket: s3Object.bucket,
-        key: s3Object.key,
-      });
-      alert("Object deleted successfully");
-      await loadObjects(currentBucket, currentPrefix);
-      setSelectedItem(null);
-    } catch (err) {
-      alert(`Delete failed: ${err}`);
+    const results = await Promise.allSettled(
+      selectedObjects.map((obj) =>
+        obj.is_prefix
+          ? invoke("delete_s3_prefix", { bucket: obj.bucket, prefix: obj.key })
+          : invoke("delete_s3_object", { bucket: obj.bucket, key: obj.key })
+      )
+    );
+    const failures = results.filter((r) => r.status === "rejected");
+    if (failures.length > 0) {
+      await message(`${failures.length} of ${count} deletion(s) failed.`, { title: "Error", kind: "error" });
     }
+    await loadObjects(currentBucket, currentPrefix);
+    setSelectedObjects([]);
+    setAnchorObject(null);
   };
 
   // Drag and drop handlers
   const handleObjectDragStart = (e: React.DragEvent, object: S3Object) => {
-    console.log("S3Pane dragStart:", object);
+    const isInSelection = selectedObjects.some((s) => s.key === object.key);
+    const objectsToDrag = isInSelection ? selectedObjects : [object];
 
-    if (object.is_prefix) {
-      console.log("Prefix/folder drag prevented");
-      e.preventDefault();
-      return;
+    if (!isInSelection) {
+      setSelectedObjects([object]);
+      setAnchorObject(object);
     }
 
-    const dragData = {
-      bucket: object.bucket,
-      key: object.key,
-    };
+    const dragData = objectsToDrag.map((o) => ({
+      bucket: o.bucket,
+      key: o.key,
+      is_prefix: o.is_prefix,
+    }));
 
-    console.log("Setting S3 drag data:", dragData);
-
-    // Store S3 object info for drag-and-drop to local
     e.dataTransfer.setData("application/x-simples3-s3", JSON.stringify(dragData));
     e.dataTransfer.effectAllowed = "copy";
-
-    console.log("S3 drag data set successfully");
   };
 
   const handleDragOver = (e: React.DragEvent) => {
-    // Only accept local files when we're in objects view (not buckets)
     if (viewMode === "objects" && e.dataTransfer.types.includes("application/x-simples3-local")) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
@@ -262,7 +370,6 @@ export function S3Pane() {
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
-    // Only reset if we're leaving the pane itself, not a child element
     if (e.currentTarget === e.target) {
       setIsDragOver(false);
     }
@@ -272,55 +379,172 @@ export function S3Pane() {
     e.preventDefault();
     setIsDragOver(false);
 
-    console.log("S3Pane handleDrop called");
-    console.log("ViewMode:", viewMode);
-    console.log("DataTransfer types:", e.dataTransfer.types);
-
-    if (viewMode !== "objects") {
-      console.log("Not in objects view, ignoring drop");
-      return;
-    }
+    if (viewMode !== "objects") return;
 
     const localData = e.dataTransfer.getData("application/x-simples3-local");
-    console.log("Local data retrieved:", localData);
-
-    if (!localData) {
-      console.log("No local data found in drop");
-      return;
-    }
+    if (!localData) return;
 
     try {
-      const { path, name } = JSON.parse(localData);
+      const parsed = JSON.parse(localData);
+      const draggedItems: Array<{ path: string; name: string; is_directory: boolean }> =
+        Array.isArray(parsed) ? parsed : [parsed];
 
-      // Use current prefix as the upload location
-      const s3Key = currentPrefix ? `${currentPrefix}${name}` : name;
-
-      console.log("Attempting to upload:", { path, name, bucket: currentBucket, s3Key });
-
-      const confirmed = confirm(
-        `Upload file to S3:\nBucket: ${currentBucket}\nKey: ${s3Key}\n\nProceed?`
-      );
-      if (!confirmed) {
-        console.log("Upload canceled by user");
-        return;
+      for (const item of draggedItems) {
+        if (item.is_directory) {
+          const s3Prefix = currentPrefix ? `${currentPrefix}${item.name}/` : `${item.name}/`;
+          await invoke<string[]>("upload_directory", {
+            localPath: item.path,
+            bucket: currentBucket,
+            s3Prefix,
+          });
+        } else {
+          const s3Key = currentPrefix ? `${currentPrefix}${item.name}` : item.name;
+          await invoke<string>("upload_file", {
+            localPath: item.path,
+            bucket: currentBucket,
+            s3Key,
+          });
+        }
       }
 
-      console.log("Calling upload_file command...");
-      const jobId = await invoke<string>("upload_file", {
-        localPath: path,
-        bucket: currentBucket,
-        s3Key,
-      });
-
-      console.log("Upload queued with job ID:", jobId);
-      alert(`Upload queued! Job ID: ${jobId}\nCheck the Transfers tab to monitor progress.`);
-
-      // Refresh objects to show new file when upload completes
       setTimeout(() => loadObjects(currentBucket, currentPrefix), 1000);
     } catch (err) {
-      console.error("Upload error:", err);
-      alert(`Upload failed: ${err}`);
+      await message(`Upload failed: ${err}`, { title: "Error", kind: "error" });
     }
+  };
+
+  // Context menu handlers
+  const handleBlankContextMenu = (e: React.MouseEvent) => {
+    if (viewMode !== "objects") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: "New Folder",
+          icon: <FolderPlus className="w-4 h-4" />,
+          onClick: async () => {
+            const name = await showInput("New Folder", "Folder name:");
+            if (!name) return;
+            try {
+              const folderKey = currentPrefix ? `${currentPrefix}${name}/` : `${name}/`;
+              await invoke("upload_file", {
+                localPath: "/dev/null",
+                bucket: currentBucket,
+                s3Key: folderKey,
+              });
+              setTimeout(() => loadObjects(currentBucket, currentPrefix), 1000);
+            } catch (err) {
+              await message(`Failed to create folder: ${err}`, { title: "Error", kind: "error" });
+            }
+          },
+        },
+        {
+          label: "Paste",
+          icon: <Clipboard className="w-4 h-4" />,
+          disabled: !clipboard,
+          onClick: async () => {
+            if (!clipboard) return;
+            try {
+              if (clipboard.source === "local") {
+                for (const item of clipboard.items) {
+                  if (item.is_directory) {
+                    const s3Prefix = currentPrefix ? `${currentPrefix}${item.name}/` : `${item.name}/`;
+                    await invoke<string[]>("upload_directory", {
+                      localPath: item.path,
+                      bucket: currentBucket,
+                      s3Prefix,
+                    });
+                  } else {
+                    const s3Key = currentPrefix ? `${currentPrefix}${item.name}` : item.name;
+                    await invoke<string>("upload_file", {
+                      localPath: item.path,
+                      bucket: currentBucket,
+                      s3Key,
+                    });
+                  }
+                }
+              } else {
+                // S3 to S3 copy
+                for (const item of clipboard.items) {
+                  if (item.is_prefix) {
+                    // Copy all objects under this prefix
+                    const objects = await invoke<S3Object[]>("list_objects", {
+                      bucket: item.bucket,
+                      prefix: item.key,
+                    });
+                    const folderName = item.key.split("/").filter((p: string) => p).pop() || "";
+                    for (const obj of objects) {
+                      if (obj.key.endsWith("/")) continue;
+                      const relativePart = obj.key.slice(item.key.length);
+                      const destKey = currentPrefix ? `${currentPrefix}${folderName}/${relativePart}` : `${folderName}/${relativePart}`;
+                      await invoke("copy_s3_object", {
+                        bucket: currentBucket,
+                        sourceKey: obj.key,
+                        destKey,
+                      });
+                    }
+                  } else {
+                    const fileName = item.key.split("/").pop() || item.key;
+                    const destKey = currentPrefix ? `${currentPrefix}${fileName}` : fileName;
+                    await invoke("copy_s3_object", {
+                      bucket: currentBucket,
+                      sourceKey: item.key,
+                      destKey,
+                    });
+                  }
+                }
+              }
+              setTimeout(() => loadObjects(currentBucket, currentPrefix), 1000);
+            } catch (err) {
+              await message(`Paste failed: ${err}`, { title: "Error", kind: "error" });
+            }
+          },
+        },
+      ],
+    });
+  };
+
+  const handleObjectContextMenu = (e: React.MouseEvent, object: S3Object) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Select the item if not already selected
+    if (!selectedObjects.some((s) => s.key === object.key)) {
+      setSelectedObjects([object]);
+      setAnchorObject(object);
+    }
+
+    const objectsForAction = selectedObjects.some((s) => s.key === object.key) ? selectedObjects : [object];
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          label: "Copy",
+          icon: <Copy className="w-4 h-4" />,
+          onClick: () => {
+            setClipboard({
+              source: "s3",
+              items: objectsForAction.map((o) => ({
+                bucket: o.bucket,
+                key: o.key,
+                is_prefix: o.is_prefix,
+              })),
+              prefix: currentPrefix,
+            });
+          },
+        },
+        {
+          label: "Delete",
+          icon: <Trash2 className="w-4 h-4" />,
+          onClick: () => handleDelete(),
+        },
+      ],
+    });
   };
 
   // Build breadcrumb from current prefix
@@ -370,7 +594,7 @@ export function S3Pane() {
       onDrop={handleDrop}
     >
       {/* Navigation bar */}
-      <div className="p-2 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
+      <div className="p-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2">
         {viewMode === "objects" && (
           <>
             <button
@@ -405,17 +629,17 @@ export function S3Pane() {
           <>
             <button
               onClick={handleDownload}
-              disabled={!selectedItem || (selectedItem as S3Object)?.is_prefix}
+              disabled={selectedObjects.length === 0 || selectedObjects.every((o) => o.is_prefix)}
               className="p-2 rounded hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-50 disabled:cursor-not-allowed text-blue-600 dark:text-blue-400"
-              title="Download selected file"
+              title="Download selected file(s)"
             >
               <Download className="w-4 h-4" />
             </button>
             <button
               onClick={handleDelete}
-              disabled={!selectedItem}
+              disabled={selectedObjects.length === 0}
               className="p-2 rounded hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-50 disabled:cursor-not-allowed text-red-600 dark:text-red-400"
-              title="Delete selected item"
+              title="Delete selected item(s)"
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -471,10 +695,13 @@ export function S3Pane() {
 
       {/* Content */}
       {!loading && (
-        <div className={`flex-1 overflow-y-auto ${isDragOver ? "bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-400 border-dashed" : ""}`}>
+        <div
+          className={`flex-1 overflow-y-auto ${isDragOver ? "bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-400 border-dashed" : ""}`}
+          onContextMenu={handleBlankContextMenu}
+        >
           {isDragOver && viewMode === "objects" && (
             <div className="p-8 text-center text-blue-600 dark:text-blue-400 font-medium">
-              Drop local file here to upload to {currentBucket}{currentPrefix ? `/${currentPrefix}` : ""}
+              Drop local file or folder here to upload to {currentBucket}{currentPrefix ? `/${currentPrefix}` : ""}
             </div>
           )}
 
@@ -490,7 +717,7 @@ export function S3Pane() {
                   <FileItem
                     key={bucket.name}
                     item={formatBucketAsFileItem(bucket)}
-                    selected={selectedItem === bucket}
+                    selected={selectedBucket === bucket}
                     onSelect={() => handleBucketClick(bucket)}
                     onDoubleClick={() => handleBucketDoubleClick(bucket)}
                   />
@@ -509,11 +736,12 @@ export function S3Pane() {
                   <FileItem
                     key={object.key}
                     item={formatObjectAsFileItem(object)}
-                    selected={selectedItem === object}
-                    onSelect={() => handleObjectClick(object)}
+                    selected={selectedObjects.some((s) => s.key === object.key)}
+                    onSelect={(_item, shiftKey) => handleObjectClick(object, shiftKey)}
                     onDoubleClick={() => handleObjectDoubleClick(object)}
-                    draggable={!object.is_prefix}
+                    draggable={true}
                     onDragStart={(e) => handleObjectDragStart(e, object)}
+                    onContextMenu={(e) => handleObjectContextMenu(e, object)}
                   />
                 ))
               )}
@@ -522,53 +750,95 @@ export function S3Pane() {
         </div>
       )}
 
-      {/* Metadata panel */}
-      {selectedItem && !loading && (
+      {/* Metadata panel - Bucket view */}
+      {viewMode === "buckets" && selectedBucket && !loading && (
         <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
           <h3 className="text-sm font-semibold mb-2">Details</h3>
-          {"name" in selectedItem ? (
-            // Bucket details
-            <div className="text-sm space-y-1">
-              <div>
-                <span className="text-gray-500">Name:</span> {selectedItem.name}
-              </div>
-              <div>
-                <span className="text-gray-500">Created:</span>{" "}
-                {new Date(selectedItem.created).toLocaleString()}
-              </div>
-              {selectedItem.region && (
-                <div>
-                  <span className="text-gray-500">Region:</span> {selectedItem.region}
-                </div>
-              )}
+          <div className="text-sm space-y-1">
+            <div>
+              <span className="text-gray-500">Name:</span> {selectedBucket.name}
             </div>
-          ) : (
-            // Object details
-            <div className="text-sm space-y-1">
-              <div>
-                <span className="text-gray-500">Key:</span> {selectedItem.key}
-              </div>
-              {!selectedItem.is_prefix && (
-                <>
-                  <div>
-                    <span className="text-gray-500">Size:</span>{" "}
-                    {(selectedItem.size / 1024 / 1024).toFixed(2)} MB
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Modified:</span>{" "}
-                    {new Date(selectedItem.modified).toLocaleString()}
-                  </div>
-                  {selectedItem.storage_class && (
-                    <div>
-                      <span className="text-gray-500">Storage Class:</span>{" "}
-                      {selectedItem.storage_class}
-                    </div>
-                  )}
-                </>
-              )}
+            <div>
+              <span className="text-gray-500">Created:</span>{" "}
+              {new Date(selectedBucket.created).toLocaleString()}
             </div>
-          )}
+            {selectedBucket.region && (
+              <div>
+                <span className="text-gray-500">Region:</span> {selectedBucket.region}
+              </div>
+            )}
+          </div>
         </div>
+      )}
+
+      {/* Metadata panel - Single object */}
+      {viewMode === "objects" && selectedObjects.length === 1 && !loading && (
+        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          <h3 className="text-sm font-semibold mb-2">Details</h3>
+          <div className="text-sm space-y-1">
+            <div>
+              <span className="text-gray-500">Key:</span> {selectedObjects[0].key}
+            </div>
+            {!selectedObjects[0].is_prefix && (
+              <>
+                <div>
+                  <span className="text-gray-500">Size:</span>{" "}
+                  {(selectedObjects[0].size / 1024 / 1024).toFixed(2)} MB
+                </div>
+                <div>
+                  <span className="text-gray-500">Modified:</span>{" "}
+                  {new Date(selectedObjects[0].modified).toLocaleString()}
+                </div>
+                {selectedObjects[0].storage_class && (
+                  <div>
+                    <span className="text-gray-500">Storage Class:</span>{" "}
+                    {selectedObjects[0].storage_class}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Metadata panel - Multiple objects */}
+      {viewMode === "objects" && selectedObjects.length > 1 && !loading && (
+        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+          <h3 className="text-sm font-semibold mb-2">{selectedObjects.length} items selected</h3>
+          <div className="text-sm space-y-1">
+            <div>Files: {selectedObjects.filter((o) => !o.is_prefix).length}</div>
+            <div>Prefixes: {selectedObjects.filter((o) => o.is_prefix).length}</div>
+            <div>Total size: {(selectedObjects.reduce((sum, o) => sum + o.size, 0) / 1024 / 1024).toFixed(2)} MB</div>
+          </div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {inputDialog && (
+        <InputDialog
+          title={inputDialog.title}
+          label={inputDialog.label}
+          defaultValue={inputDialog.defaultValue}
+          onConfirm={inputDialog.onConfirm}
+          onCancel={cancelInput}
+        />
+      )}
+
+      {confirmDialog && (
+        <ConfirmDialog
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={cancelConfirm}
+        />
       )}
     </div>
   );
