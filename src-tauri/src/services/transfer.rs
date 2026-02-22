@@ -31,22 +31,21 @@ impl TransferService {
         std::fs::create_dir_all(&config_dir).ok();
         let persist_path = config_dir.join("transfers.json");
 
-        let mut service = Self {
-            jobs: Arc::new(Mutex::new(Vec::new())),
-            persist_path,
-        };
+        // Load persisted transfers from disk during init
+        let jobs = Self::load_from_disk(&persist_path);
 
-        // Load persisted transfers on startup (blocking since this is init)
-        service.load_from_disk_sync();
-        service
+        Self {
+            jobs: Arc::new(Mutex::new(jobs)),
+            persist_path,
+        }
     }
 
-    /// Load persisted transfer state from disk (sync, for init)
-    fn load_from_disk_sync(&mut self) {
-        if !self.persist_path.exists() {
-            return;
+    /// Load persisted transfer state from disk
+    fn load_from_disk(persist_path: &PathBuf) -> Vec<TransferJob> {
+        if !persist_path.exists() {
+            return Vec::new();
         }
-        match std::fs::read_to_string(&self.persist_path) {
+        match std::fs::read_to_string(persist_path) {
             Ok(content) => {
                 match serde_json::from_str::<Vec<TransferJob>>(&content) {
                     Ok(mut jobs) => {
@@ -56,16 +55,18 @@ impl TransferService {
                                 job.status = TransferStatus::Paused;
                             }
                         }
-                        *self.jobs.blocking_lock() = jobs;
-                        tracing::info!("Loaded {} persisted transfers", self.jobs.blocking_lock().len());
+                        tracing::info!("Loaded {} persisted transfers", jobs.len());
+                        jobs
                     }
                     Err(e) => {
                         tracing::warn!("Failed to parse transfers.json: {}", e);
+                        Vec::new()
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!("Failed to read transfers.json: {}", e);
+                Vec::new()
             }
         }
     }
