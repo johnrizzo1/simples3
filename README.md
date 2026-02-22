@@ -10,6 +10,7 @@ A simple, cross-platform desktop client for browsing and managing files on S3-co
 
 ## Features
 
+- **Open Source and unencombered** -- Fully Open Source and unencumbered
 - **Dual-pane file browser** — local filesystem on the left, S3 on the right
 - **Multiple S3 endpoints** — connect to AWS S3, MinIO, Backblaze B2, Cloudflare R2, or any S3-compatible service; switch between them instantly
 - **Secure credentials** — access keys are stored in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
