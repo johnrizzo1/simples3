@@ -46,7 +46,10 @@
   scripts.dev.exec = ''
     echo "Starting SimpleS3 in development mode..."
     bun install
-    bun run tauri dev
+    PORT=$(node scripts/find-free-port.cjs 5173)
+    echo "Using dev server port: $PORT"
+    export DEVSERVER_PORT="$PORT"
+    bun run tauri dev --config "{\"build\":{\"devUrl\":\"http://localhost:$PORT\"}}"
   '';
 
   scripts.build.exec = ''

@@ -13,7 +13,7 @@ module.exports = {
   },
 
   devServer: {
-    port: 5173,
+    port: parseInt(process.env.DEVSERVER_PORT || '5173', 10),
     hot: true,
     open: false,
   },
